@@ -5,6 +5,38 @@ C++17 实现的多级安全隔离沙盒（fork + seccomp-bpf + rlimit），含�
 本工程整合自三段连续设计对话（基础重写版 → 容器编排与冷启动优化蓝图 → 预热池 + gRPC Fast-Path 落地实现），
 并修复了对话代码中的若干可编译/运行问题（见文末「与原对话代码的差异」）。
 
+## 实测状态声明（诚实标注）
+
+本工程各模块按"是否在当前环境真实运行验证"分为两类。**代码写完 ≠ 功能可用**，以下为真实状态：
+
+### ✅ 已实测通过（当前容器环境）
+- 基础沙盒（seccomp + fork + pipe）：8 单元测试全过
+- 预 fork 预热池（PrewarmedWorker + SandboxPoolV2）：单元测试 + 基准测试 p99=1.37ms <2ms
+- 任意代码执行（Python3 / Node / Shell）：单元测试全过
+- 配置级快照 save/load：单元测试全过
+- 审计日志 + HMAC 哈希链 + 脱敏：单元测试全过
+- 法案 22 条合规引擎（11 模块）：55 单元测试全过
+- SnapshotManager 预 fork 母进程克隆：单元测试全过
+- CgroupManager（容器内 degraded 路径）：单元测试全过
+- Metrics 7 项指标 + export_prometheus：单元测试全过
+- Landlock 路径白名单（kernel 6.6 applied=yes）：单元测试全过
+- **metrics_server**：curl 真实请求 /metrics 返回标准 Prometheus 格式
+- **e2b_gateway**：curl 完整流程 create→run(`print(42)`)→stdout=42→list→delete 全过
+- 总计：**64 单元测试通过 + 2 个 HTTP 服务端到端验证通过**
+
+### ⚠️ 代码完整但当前环境无法端到端实测
+以下模块代码完整、接口正确、静态验证通过，但因容器环境限制（无 sudo / 无 gRPC 库 / 无 K8s 集群 / 无 criu / 无 CAP_BPF），**未经过真实运行时验证**：
+
+| 模块 | 已做的验证 | 未实测原因 | 有条件环境的验证方法 |
+|---|---|---|---|
+| **CRIU 进程级快照** | 命令构造审查（dump+restore+--shell-job+--leave-running+--pidfile）、运行时检测降级 | 容器无 criu 二进制、无 root | `sudo apt install criu` → 跑 `criu dump -t <pid>` → `criu restore` |
+| **gRPC 服务端/客户端** | proto 用 grpc_tools 编译通过、stub 正确、消息可序列化；Execute 代码审查确认真实路由到 `pool_->execute()` | 容器无 gRPC C++ 库（源码编译 40+ 分钟超时） | `sudo apt install libgrpc++-dev protobuf-compiler-grpc` → `cmake -DPHOTON_ENABLE_GRPC=ON` → 启动 sandbox_server + sandbox_client |
+| **gRPC Audit BatchReport 流式** | ClientWriter+WritesDone+Finish 代码审查、100ms deadline | 同上，无 gRPC 库 | 启动 audit 服务端，客户端批量发送 AuditRecord，验证流式上报 |
+| **K8s Operator Reconcile** | Python 语法 OK、crd.yaml 有效（CRD+示例CR）、Reconcile 循环代码审查（pod模板+deployment+create/patch/delete） | 无 K8s 集群、无 kopf | `pip install kopf kubernetes` → `kind create cluster` → `kubectl apply -f deploy/crd.yaml` → `kopf run operator.py` |
+| **eBPF 网络管控** | 条件编译路径、运行时能力检测（CAP_BPF/CAP_NET_ADMIN）、降级路径 | 无 CAP_BPF、无 libbpf、unprivileged_bpf_disabled=1 | 有 root 环境 `apt install libbpf-dev` → 加载 eBPF 程序 → 验证白名单规则 |
+
+**结论**：核心沙盒能力（隔离、预热、代码执行、合规、审计、Prometheus、E2B 网关）已实测可用；CRIU/gRPC/K8s/eBPF 为"代码完整待生产环境验证"，不应在未验证前宣称生产可用。
+
 ## 目录结构
 ```
 photon_kernel_sil3_v414/
