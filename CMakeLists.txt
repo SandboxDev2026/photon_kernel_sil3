@@ -115,6 +115,8 @@ set(SANDBOX_SOURCES
   src/sandbox/cgroup_manager.cpp
   src/sandbox/metrics.cpp
   src/sandbox/landlock.cpp
+  src/sandbox/http_server.cpp
+  src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
 )
@@ -151,6 +153,14 @@ if(GTest_FOUND)
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
   target_link_libraries(sandbox_benchmark_v2 photon_sandbox Threads::Threads)
+
+  # ---- Prometheus /metrics HTTP 端点 ----
+  add_executable(metrics_server server/metrics_server.cpp)
+  target_link_libraries(metrics_server photon_sandbox Threads::Threads)
+
+  # ---- E2B SDK 兼容 HTTP 网关 ----
+  add_executable(e2b_gateway server/e2b_gateway.cpp)
+  target_link_libraries(e2b_gateway photon_sandbox Threads::Threads)
 else()
   message(WARNING "GTest not found -> test_sandbox skipped. "
                   "Install with: sudo apt install libgtest-dev, then build googletest, "

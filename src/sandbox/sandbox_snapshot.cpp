@@ -114,19 +114,33 @@ bool SandboxSnapshot::load(const std::string& path, SandboxSnapshot& out) {
     return true;
 }
 
-// ======================= CRIU 集成 =======================
+// ======================= CRIU 集成（进程级快照，AgentENV 级别） =======================
+// 运行时检测 criu 可用性；无 criu 时自动降级，不影响核心功能。
+// 需要 root 权限 + 内核 CONFIG_CHECKPOINT_RESTORE。
+
+#include <unistd.h>
+#include <fstream>
 
 bool criu_available() {
+    // 高效检测：依次检查常见路径，不启动 shell
+    static const char* paths[] = {"/usr/bin/criu", "/usr/sbin/criu", "/usr/local/bin/criu", nullptr};
+    for (int i = 0; paths[i]; ++i) {
+        if (::access(paths[i], X_OK) == 0) return true;
+    }
     return ::system("command -v criu >/dev/null 2>&1") == 0;
 }
 
 bool criu_dump_process(pid_t pid, const std::string& image_dir, std::string& err) {
     if (!criu_available()) {
-        err = "criu not installed (needs root)";
+        err = "criu not installed (needs root + kernel CONFIG_CHECKPOINT_RESTORE)";
         return false;
     }
+    // 创建快照目录
+    std::string mkdir_cmd = "mkdir -p " + image_dir;
+    ::system(mkdir_cmd.c_str());
+    // --shell-job：允许控制终端相关进程；--leave-running：dump 后原进程继续运行
     std::string cmd = "criu dump -t " + std::to_string(static_cast<long>(pid)) +
-                      " -D " + image_dir + " --shell-job 2>&1";
+                      " -D " + image_dir + " --shell-job --leave-running 2>&1";
     int rc = ::system(cmd.c_str());
     if (rc != 0) {
         err = "criu dump failed, rc=" + std::to_string(rc);
@@ -137,16 +151,25 @@ bool criu_dump_process(pid_t pid, const std::string& image_dir, std::string& err
 
 bool criu_restore_process(const std::string& image_dir, pid_t& out_pid, std::string& err) {
     if (!criu_available()) {
-        err = "criu not installed (needs root)";
+        err = "criu not installed (needs root + kernel CONFIG_CHECKPOINT_RESTORE)";
         return false;
     }
-    std::string cmd = "criu restore -D " + image_dir + " --shell-job 2>&1";
+    // --pidfile：恢复后将 PID 写入文件，便于调用方获取
+    std::string pidfile = image_dir + "/restored.pid";
+    std::string cmd = "criu restore -d -D " + image_dir +
+                      " --shell-job --pidfile " + pidfile + " 2>&1";
     int rc = ::system(cmd.c_str());
     if (rc != 0) {
         err = "criu restore failed, rc=" + std::to_string(rc);
         return false;
     }
-    out_pid = 0;  // 由调用方从进程树发现；真实部署中可用 --pidfile
+    // 读取恢复后的 PID
+    std::ifstream pf(pidfile);
+    if (pf.good()) {
+        pf >> out_pid;
+    } else {
+        out_pid = -1;  // 恢复成功但无法读取 PID（由调用方从进程树发现）
+    }
     return true;
 }
 
