@@ -1,8 +1,13 @@
 #include "photon_kernel/sandbox/audit_security.hpp"
-
+// 条件编译：有 OpenSSL 用 OpenSSL，否则用纯 C++ 自实现（crypto_utils）
+#if __has_include(<openssl/evp.h>) && defined(PHOTON_HAVE_OPENSSL)
 #include <openssl/evp.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+#define PHOTON_USE_OPENSSL 1
+#else
+#include "photon_kernel/sandbox/crypto_utils.hpp"
+#endif
 
 #include <cstdio>
 #include <fstream>
@@ -28,18 +33,28 @@ std::string to_hex(const unsigned char* data, size_t len) {
 } // namespace
 
 std::string AuditHasher::hmac_sha256_hex(const std::string& key, const std::string& data) {
+#ifdef PHOTON_USE_OPENSSL
     unsigned char digest[EVP_MAX_MD_SIZE];
     unsigned int len = 0;
     HMAC(EVP_sha256(), key.data(), static_cast<int>(key.size()),
          reinterpret_cast<const unsigned char*>(data.data()), data.size(),
          digest, &len);
     return to_hex(digest, len);
+#else
+    auto digest = crypto::hmac_sha256(key, data);
+    return crypto::to_hex(digest);
+#endif
 }
 
 std::string AuditHasher::sha256_hex(const std::string& data) {
+#ifdef PHOTON_USE_OPENSSL
     unsigned char digest[SHA256_DIGEST_LENGTH];
     SHA256(reinterpret_cast<const unsigned char*>(data.data()), data.size(), digest);
     return to_hex(digest, SHA256_DIGEST_LENGTH);
+#else
+    auto digest = crypto::sha256(data);
+    return crypto::to_hex(digest);
+#endif
 }
 
 // ======================= AuditChain =======================

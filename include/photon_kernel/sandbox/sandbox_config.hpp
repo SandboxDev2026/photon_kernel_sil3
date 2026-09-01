@@ -24,6 +24,9 @@ struct SandboxConfig {
     std::chrono::seconds cpu_time_limit{2};          // RLIMIT_CPU
     size_t process_limit = 32;                       // RLIMIT_NPROC
     size_t file_size_limit = 10 * 1024 * 1024;       // RLIMIT_FSIZE
+    size_t nofile_limit = 64;                           // RLIMIT_NOFILE（防 fd 耗尽）
+    size_t sigpending_limit = 32;                       // RLIMIT_SIGPENDING
+    size_t msgqueue_limit = 64 * 1024;                 // RLIMIT_MSGQUEUE（64KB）
 
     // ---- 网络与文件权限 ----
     bool allow_network = false;

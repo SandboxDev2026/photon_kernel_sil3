@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstring>
 #include <algorithm>
+#include <fstream>
 #include <iostream>
 
 #ifndef PR_SET_NO_NEW_PRIVS
@@ -255,6 +256,34 @@ void SandboxPolicy::apply_rlimits(const SandboxConfig& config, bool apply_nproc)
     rlim.rlim_cur = config.file_size_limit;
     rlim.rlim_max = config.file_size_limit;
     setrlimit(RLIMIT_FSIZE, &rlim);
+
+    // ---- DoS 防护增强：补齐剩余 rlimit ----
+    // 核心转储：禁用（防止恶意代码生成大 core 文件耗尽磁盘）
+    rlim.rlim_cur = 0;
+    rlim.rlim_max = 0;
+    setrlimit(RLIMIT_CORE, &rlim);
+
+    // 文件描述符数：防止 fd 耗尽攻击（每个连接/文件占一个 fd）
+    rlim.rlim_cur = static_cast<rlim_t>(config.nofile_limit);
+    rlim.rlim_max = static_cast<rlim_t>(config.nofile_limit);
+    setrlimit(RLIMIT_NOFILE, &rlim);
+
+    // 挂起信号数：防止信号队列耗尽
+    rlim.rlim_cur = static_cast<rlim_t>(config.sigpending_limit);
+    rlim.rlim_max = static_cast<rlim_t>(config.sigpending_limit);
+    setrlimit(RLIMIT_SIGPENDING, &rlim);
+
+    // 消息队列字节数：防止 POSIX 消息队列耗尽内核内存
+    rlim.rlim_cur = static_cast<rlim_t>(config.msgqueue_limit);
+    rlim.rlim_max = static_cast<rlim_t>(config.msgqueue_limit);
+    setrlimit(RLIMIT_MSGQUEUE, &rlim);
+
+    // OOM 分数调整：沙盒子进程优先被 OOM killer 选中（保护宿主）
+    // oom_score_adj 范围 -1000~1000，1000 表示最优先被杀
+    {
+        std::ofstream oom("/proc/self/oom_score_adj");
+        if (oom.good()) oom << "1000";
+    }
 }
 
 } // namespace sandbox

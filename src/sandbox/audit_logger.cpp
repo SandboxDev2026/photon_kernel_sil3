@@ -1,6 +1,8 @@
 #include "photon_kernel/sandbox/audit_logger.hpp"
 
 #include <iostream>
+#include <fstream>
+#include <sys/stat.h>
 
 namespace photon_kernel {
 namespace sandbox {
@@ -17,6 +19,10 @@ void AuditLogger::init(const std::string& file_path, bool mirror_stderr) {
     }
     path_ = file_path;
     file_.open(file_path, std::ios::app);
+    // 安全：审计日志文件权限收紧为 0600（仅所有者可读写，防止篡改/窃读）
+    if (file_.is_open()) {
+        ::chmod(file_path.c_str(), 0600);
+    }
     mirror_stderr_ = mirror_stderr;
     initialized_ = file_.is_open();
     if (!initialized_) {

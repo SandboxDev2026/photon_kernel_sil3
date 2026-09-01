@@ -28,7 +28,13 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -Werror=return-type -pthread")
 find_package(Threads REQUIRED)
-find_package(OpenSSL REQUIRED)  # 审计防篡改 HMAC-SHA256
+find_package(OpenSSL QUIET)  # 审计防篡改 HMAC-SHA256（可选，无 OpenSSL 时用自实现 fallback）
+if(OpenSSL_FOUND)
+    add_compile_definitions(PHOTON_HAVE_OPENSSL)
+    message(STATUS "OpenSSL found: using OpenSSL HMAC-SHA256")
+else()
+    message(STATUS "OpenSSL not found: using built-in crypto_utils (SHA256/HMAC fallback)")
+endif()
 
 # ============================================================
 # 静态分析工具版本锁定（V4.14 第十条：静态分析）
@@ -116,6 +122,7 @@ set(SANDBOX_SOURCES
   src/sandbox/metrics.cpp
   src/sandbox/landlock.cpp
   src/sandbox/http_server.cpp
+  src/sandbox/crypto_utils.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -123,7 +130,10 @@ set(SANDBOX_SOURCES
 
 add_library(photon_sandbox STATIC ${SANDBOX_SOURCES})
 target_include_directories(photon_sandbox PUBLIC include)
-target_link_libraries(photon_sandbox PUBLIC Threads::Threads OpenSSL::Crypto)
+target_link_libraries(photon_sandbox PUBLIC Threads::Threads)
+if(OpenSSL_FOUND)
+    target_link_libraries(photon_sandbox PUBLIC OpenSSL::Crypto)
+endif()
 
 # ============================================================
 # 单元测试（需 GTest；未安装时自动跳过，并打印提示）
