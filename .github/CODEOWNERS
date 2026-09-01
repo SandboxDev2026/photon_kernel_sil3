@@ -1,0 +1,38 @@
+# CODEOWNERS - 代码所有者和安全审查规则
+# 语法: <路径模式> <@用户名或团队>
+# 安全敏感文件需要额外审查
+
+# 核心隔离代码（需要安全审查员）
+/src/sandbox/sandbox_policy.cpp      @security-reviewers
+/src/sandbox/seccomp*.cpp            @security-reviewers
+/include/photon_kernel/sandbox/sandbox_policy.hpp @security-reviewers
+
+# eBPF 代码
+/ebpf/                                 @security-reviewers
+/src/sandbox/ebpf_network.cpp         @security-reviewers
+
+# 审计和加密
+/src/sandbox/audit_security.cpp       @security-reviewers
+/src/sandbox/crypto_utils.cpp         @security-reviewers
+/src/sandbox/audit_logger.cpp         @security-reviewers
+
+# CapabilityToken 和资源代理
+/src/sandbox/capability_token.cpp     @security-reviewers
+/src/sandbox/resource_proxy.cpp       @security-reviewers
+
+# CRIU 快照
+/src/sandbox/sandbox_snapshot.cpp     @security-reviewers
+
+# cgroup 管理
+/src/sandbox/cgroup_manager.cpp        @security-reviewers
+
+# 构建配置
+/CMakeLists.txt                        @maintainers
+/Dockerfile                            @maintainers
+
+# 安全文档
+/SECURITY.md                           @security-reviewers
+/docs/security_audit.md                @security-reviewers
+
+# 所有文件默认审查员
+*                                       @maintainers
