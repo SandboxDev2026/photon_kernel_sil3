@@ -37,10 +37,10 @@ struct SandboxInstance {
     std::string id;
     bool healthy = true;
 
-    SandboxInstance(const SandboxConfig& cfg, const std::string& id)
+    SandboxInstance(const SandboxConfig& cfg, const std::string& init_id)
         : executor(std::make_unique<SandboxedExecutor>(cfg)),
-          id(id),
-          last_used(std::chrono::steady_clock::now()) {}
+          last_used(std::chrono::steady_clock::now()),
+          id(init_id) {}
 };
 
 // ---- 预热池（参考 OpenSandbox poolRef 机制） ----

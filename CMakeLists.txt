@@ -146,6 +146,7 @@ if(GTest_FOUND)
     tests/eh_v414_compliance.cpp
     tests/eh_act_compliance.cpp
     tests/eh_nuclear_optimizations.cpp
+  tests/eh_ebpf_criu_quality.cpp
   )
   target_link_libraries(test_enhanced photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME EnhancedTests COMMAND test_enhanced)

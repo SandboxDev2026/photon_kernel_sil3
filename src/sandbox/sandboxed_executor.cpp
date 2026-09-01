@@ -59,16 +59,22 @@ static void child_process_entry(const SandboxedTask& task,
 
         // 6. 完成
         const char* done_msg = "DONE";
-        write(write_fd, done_msg, strlen(done_msg));
+        ssize_t _w = write(write_fd, done_msg, strlen(done_msg));
+
+        if (_w < 0) { /* 子进程中无法上报写入失败 */ }
         _exit(0);
 
     } catch (const std::exception& e) {
         std::string err = "EXCEPTION: " + std::string(e.what());
-        write(write_fd, err.c_str(), err.size());
+        ssize_t _w = write(write_fd, err.c_str(), err.size());
+
+        if (_w < 0) { /* 子进程中无法上报写入失败 */ }
         _exit(1);
     } catch (...) {
         const char* msg = "UNKNOWN_EXCEPTION";
-        write(write_fd, msg, strlen(msg));
+        ssize_t _w = write(write_fd, msg, strlen(msg));
+
+        if (_w < 0) { /* 子进程中无法上报写入失败 */ }
         _exit(1);
     }
 }

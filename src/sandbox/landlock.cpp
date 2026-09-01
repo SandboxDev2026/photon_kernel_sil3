@@ -15,7 +15,8 @@ bool LandlockEnforcer::is_supported() {
 #ifdef PHOTON_LANDLOCK_AVAILABLE
     struct landlock_ruleset_attr attr = {};
     attr.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE;
-    int fd = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+    long _rc = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+    int fd = static_cast<int>(_rc);
     if (fd >= 0) {
         close(fd);
         return true;
@@ -37,7 +38,8 @@ LandlockResult LandlockEnforcer::apply_read_only(const std::vector<std::string>&
     result.available = true;
     struct landlock_ruleset_attr attr = {};
     attr.handled_access_fs = LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
-    int ruleset_fd = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+    long _rc2 = syscall(SYS_landlock_create_ruleset, &attr, sizeof(attr), 0);
+    int ruleset_fd = static_cast<int>(_rc2);
     if (ruleset_fd < 0) {
         result.message = "landlock_create_ruleset failed: " + std::string(std::strerror(errno));
         return result;

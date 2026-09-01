@@ -14,9 +14,9 @@ struct JumpHop {
     bool is_active_communication;
     bool is_planned_deployment;
     uint32_t hop_index;
-    // ---- 第九条：跳数声明的验证证据 ----
-    std::string rule_base_version;    // 下游规则校验层使用的规则库版本
-    std::string verification_digest;  // 校验层日志摘要 / 签名（可追溯证据）
+    // ---- 第九条：跳数声明的验证证据（可选，未提供时为空）----
+    std::string rule_base_version = "";     // 下游规则校验层使用的规则库版本
+    std::string verification_digest = "";   // 校验层日志摘要 / 签名（可追溯证据）
 };
 
 // 跳数=1 声明的验证结果

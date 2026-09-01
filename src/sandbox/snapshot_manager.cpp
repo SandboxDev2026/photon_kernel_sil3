@@ -20,7 +20,9 @@ void snapshot_parent_main(int cmd_fd, int res_fd, const SandboxConfig& cfg) {
         SandboxPolicy::install_seccomp_filter(whitelist);
     } catch (...) {
         static const char fail = 'X';
-        (void)write(res_fd, &fail, 1);
+        ssize_t _w = write(res_fd, &fail, 1);
+
+        if (_w < 0) { /* 写入失败 */ }
         _exit(1);
     }
     // 通知父进程就绪
@@ -41,7 +43,9 @@ void snapshot_parent_main(int cmd_fd, int res_fd, const SandboxConfig& cfg) {
             if (child < 0) {
                 // fork 失败，返回 -1
                 pid_t neg = -1;
-                (void)write(res_fd, &neg, sizeof(pid_t));
+                ssize_t _w = write(res_fd, &neg, sizeof(pid_t));
+
+                if (_w < 0) { /* 写入失败 */ }
                 continue;
             }
             // 返回子进程 PID 给父进程
@@ -64,8 +68,8 @@ SnapshotManager& SnapshotManager::instance() {
 void SnapshotManager::init(size_t pool_size, int risk_level) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (initialized_) return;
-    RiskLevel level = static_cast<RiskLevel>(risk_level);
     SandboxConfig cfg = SandboxConfig::for_code_runner();
+    cfg.risk_level = static_cast<RiskLevel>(risk_level);  // 修复：之前 risk_level 被静默忽略
     for (size_t i = 0; i < pool_size; ++i) {
         int cmd_pipe[2] = {-1, -1};
         int res_pipe[2] = {-1, -1};
@@ -151,7 +155,9 @@ void SnapshotManager::shutdown() {
     for (auto& snap : snapshots_) {
         if (snap.cmd_fd >= 0) {
             char quit = 'Q';
-            (void)write(snap.cmd_fd, &quit, 1);
+            ssize_t _w = write(snap.cmd_fd, &quit, 1);
+
+            if (_w < 0) { /* 写入失败 */ }
             close(snap.cmd_fd);
             snap.cmd_fd = -1;
         }

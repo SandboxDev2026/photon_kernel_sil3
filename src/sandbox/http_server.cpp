@@ -127,7 +127,8 @@ void HttpServer::handle_client(int client_fd) {
     }
     out << "\r\n" << resp.body;
     std::string response_str = out.str();
-    write(client_fd, response_str.data(), response_str.size());
+    ssize_t _w = write(client_fd, response_str.data(), response_str.size());
+    if (_w < 0) { /* 客户端可能已断开 */ }
     close(client_fd);
 }
 bool HttpServer::start(int port) {
@@ -141,7 +142,7 @@ bool HttpServer::start(int port) {
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons(port);
+    addr.sin_port = htons(static_cast<uint16_t>(port));
     if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
         std::cerr << "[HttpServer] bind(" << port << ") failed: " << std::strerror(errno) << "\n";
         close(listen_fd_);

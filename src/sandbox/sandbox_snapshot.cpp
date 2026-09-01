@@ -137,7 +137,8 @@ bool criu_dump_process(pid_t pid, const std::string& image_dir, std::string& err
     }
     // 创建快照目录
     std::string mkdir_cmd = "mkdir -p " + image_dir;
-    ::system(mkdir_cmd.c_str());
+    int _mkdir_rc = ::system(mkdir_cmd.c_str());
+    if (_mkdir_rc != 0) { /* mkdir 失败不影响 dump（目录可能已存在） */ }
     // --shell-job：允许控制终端相关进程；--leave-running：dump 后原进程继续运行
     std::string cmd = "criu dump -t " + std::to_string(static_cast<long>(pid)) +
                       " -D " + image_dir + " --shell-job --leave-running 2>&1";

@@ -22,18 +22,21 @@ C++17 实现的多级安全隔离沙盒（fork + seccomp-bpf + rlimit），含�
 - Landlock 路径白名单（kernel 6.6 applied=yes）：单元测试全过
 - **metrics_server**：curl 真实请求 /metrics 返回标准 Prometheus 格式
 - **e2b_gateway**：curl 完整流程 create→run(`print(42)`)→stdout=42→list→delete 全过
-- 总计：**64 单元测试通过 + 2 个 HTTP 服务端到端验证通过**
+- 总计：**99 测试通过 + 2 跳过**（C++ 77 通过+2跳过 / Python Operator 14 / Python gRPC契约 8）
+- 含 **2 个 HTTP 服务端到端验证**（metrics_server /metrics + e2b_gateway 完整流程）
+- 含 **gRPC 端到端契约测试**（Python 模拟服务端，验证 Execute/ExecuteAsync/GetPoolStatus/BatchReport流式 真实通信）
+- 含 **K8s Operator 纯函数测试**（_build_worker_pod_template/_build_worker_deployment，不需要 K8s 集群）
 
 ### ⚠️ 代码完整但当前环境无法端到端实测
 以下模块代码完整、接口正确、静态验证通过，但因容器环境限制（无 sudo / 无 gRPC 库 / 无 K8s 集群 / 无 criu / 无 CAP_BPF），**未经过真实运行时验证**：
 
 | 模块 | 已做的验证 | 未实测原因 | 有条件环境的验证方法 |
 |---|---|---|---|
-| **CRIU 进程级快照** | 命令构造审查（dump+restore+--shell-job+--leave-running+--pidfile）、运行时检测降级 | 容器无 criu 二进制、无 root | `sudo apt install criu` → 跑 `criu dump -t <pid>` → `criu restore` |
-| **gRPC 服务端/客户端** | proto 用 grpc_tools 编译通过、stub 正确、消息可序列化；Execute 代码审查确认真实路由到 `pool_->execute()` | 容器无 gRPC C++ 库（源码编译 40+ 分钟超时） | `sudo apt install libgrpc++-dev protobuf-compiler-grpc` → `cmake -DPHOTON_ENABLE_GRPC=ON` → 启动 sandbox_server + sandbox_client |
+| **CRIU 进程级快照** | 命令构造审查 + **7 个 C++ 单元测试**（检测逻辑、降级路径、配置级快照往返）、运行时检测降级 | 容器无 criu 二进制、无 root | `sudo apt install criu` → 跑 `criu dump -t <pid>` → `criu restore` |
+| **gRPC 服务端/客户端** | proto 编译通过 + **8 个 Python 端到端契约测试**（模拟服务端，验证 Execute/ExecuteAsync/GetPoolStatus/BatchReport流式 真实通信+序列化+超时）；Execute 代码审查确认真实路由到 `pool_->execute()` | 容器无 gRPC C++ 库（源码编译 40+ 分钟超时） | `sudo apt install libgrpc++-dev protobuf-compiler-grpc` → `cmake -DPHOTON_ENABLE_GRPC=ON` → 启动 sandbox_server + sandbox_client |
 | **gRPC Audit BatchReport 流式** | ClientWriter+WritesDone+Finish 代码审查、100ms deadline | 同上，无 gRPC 库 | 启动 audit 服务端，客户端批量发送 AuditRecord，验证流式上报 |
-| **K8s Operator Reconcile** | Python 语法 OK、crd.yaml 有效（CRD+示例CR）、Reconcile 循环代码审查（pod模板+deployment+create/patch/delete） | 无 K8s 集群、无 kopf | `pip install kopf kubernetes` → `kind create cluster` → `kubectl apply -f deploy/crd.yaml` → `kopf run operator.py` |
-| **eBPF 网络管控** | 条件编译路径、运行时能力检测（CAP_BPF/CAP_NET_ADMIN）、降级路径 | 无 CAP_BPF、无 libbpf、unprivileged_bpf_disabled=1 | 有 root 环境 `apt install libbpf-dev` → 加载 eBPF 程序 → 验证白名单规则 |
+| **K8s Operator Reconcile** | Python 语法 OK + **14 个纯函数单元测试**（pod模板默认值/自定义spec/安全上下文/白名单环境变量/downwardAPI、deployment replicas/ownerRef/selector匹配、CRD YAML有效性）、Reconcile 循环代码审查 | 无 K8s 集群、无 kopf | `pip install kopf kubernetes` → `kind create cluster` → `kubectl apply -f deploy/crd.yaml` → `kopf run operator.py` |
+| **eBPF 网络管控** | 条件编译路径 + **7 个 C++ 单元测试**（单例、status、无权限降级、未加载add/remove返回false、set_deny_all、NetworkRule字段）、运行时能力检测 | 无 CAP_BPF、无 libbpf、unprivileged_bpf_disabled=1 | 有 root 环境 `apt install libbpf-dev` → 加载 eBPF 程序 → 验证白名单规则 |
 
 **结论**：核心沙盒能力（隔离、预热、代码执行、合规、审计、Prometheus、E2B 网关）已实测可用；CRIU/gRPC/K8s/eBPF 为"代码完整待生产环境验证"，不应在未验证前宣称生产可用。
 
