@@ -111,6 +111,10 @@ set(SANDBOX_SOURCES
   src/sandbox/prewarmed_worker.cpp
   src/sandbox/sandbox_pool_v2.cpp
   src/sandbox/sandbox_snapshot.cpp
+  src/sandbox/snapshot_manager.cpp
+  src/sandbox/cgroup_manager.cpp
+  src/sandbox/metrics.cpp
+  src/sandbox/landlock.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
 )
@@ -139,6 +143,7 @@ if(GTest_FOUND)
     tests/eh_sandbox_snapshot.cpp
     tests/eh_v414_compliance.cpp
     tests/eh_act_compliance.cpp
+    tests/eh_nuclear_optimizations.cpp
   )
   target_link_libraries(test_enhanced photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME EnhancedTests COMMAND test_enhanced)
