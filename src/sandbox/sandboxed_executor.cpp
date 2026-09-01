@@ -8,6 +8,9 @@
 #include <sys/prctl.h>
 #include <signal.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/syscall.h>
+#include <fcntl.h>
 
 #include <chrono>
 #include <thread>
@@ -33,11 +36,46 @@ SandboxedExecutor::SandboxedExecutor(const SandboxConfig& config)
     }
 }
 
+// ---- 安全：关闭子进程中所有非必要文件描述符 ----
+// 沙盒子进程不应继承父进程的 fd（可通过 /proc/self/fd 访问父进程文件）。
+// 只保留 stdin(0)/stdout(1)/stderr(2) 和通信 pipe。
+static void close_unneeded_fds(int keep_fd) {
+    // 优先用 close_range（Linux 5.9+），高效批量关闭
+#if defined(__linux__) && defined(SYS_close_range)
+    // 关闭 3 到 keep_fd-1，以及 keep_fd+1 到 UINT_MAX
+    // 分两段：先关 3..keep_fd-1，再关 keep_fd+1..~0U
+    if (keep_fd > 3) {
+        syscall(SYS_close_range, 3, static_cast<unsigned>(keep_fd) - 1, 0);
+    }
+    syscall(SYS_close_range, static_cast<unsigned>(keep_fd) + 1, ~0U, 0);
+    return;
+#endif
+    // fallback：遍历 /proc/self/fd
+    DIR* dir = opendir("/proc/self/fd");
+    if (!dir) return;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        int fd = std::atoi(entry->d_name);
+        if (fd >= 3 && fd != keep_fd) {
+            close(fd);
+        }
+    }
+    closedir(dir);
+}
+
 // ---- 子进程入口（参考 NsJail child.cpp） ----
 static void child_process_entry(const SandboxedTask& task,
                                 const SandboxConfig& config,
                                 int write_fd) {
     try {
+        // 0. 安全：关闭所有继承的非必要 fd（防止沙盒逃逸访问父进程文件）
+        close_unneeded_fds(write_fd);
+        // 0b. stdin 重定向到 /dev/null（防止用户代码读取父进程输入）
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) {
+            dup2(devnull, STDIN_FILENO);
+            close(devnull);
+        }
         // 1. 应用资源限制（rlimit）
         SandboxPolicy::apply_rlimits(config);
 

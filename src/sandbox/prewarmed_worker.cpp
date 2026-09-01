@@ -5,6 +5,10 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <fcntl.h>
+#include <algorithm>
+#include <sys/syscall.h>
 #include <signal.h>
 
 #include <cstring>
@@ -81,8 +85,37 @@ std::string w_result_to_json(const CodeRunResult& r) {
     return oss.str();
 }
 
+// 安全：关闭所有非必要 fd（保留 cmd_fd 和 res_fd）
+static void close_unneeded_fds_worker(int keep1, int keep2) {
+#if defined(__linux__) && defined(SYS_close_range)
+    unsigned k1 = static_cast<unsigned>(keep1);
+    unsigned k2 = static_cast<unsigned>(keep2);
+    unsigned lo = std::min(k1, k2);
+    unsigned hi = std::max(k1, k2);
+    if (lo > 3) syscall(SYS_close_range, 3, lo - 1, 0);
+    if (hi > lo + 1) syscall(SYS_close_range, lo + 1, hi - 1, 0);
+    syscall(SYS_close_range, hi + 1, ~0U, 0);
+    return;
+#endif
+    DIR* dir = opendir("/proc/self/fd");
+    if (!dir) return;
+    struct dirent* entry;
+    while ((entry = readdir(dir)) != nullptr) {
+        int fd = std::atoi(entry->d_name);
+        if (fd >= 3 && fd != keep1 && fd != keep2) close(fd);
+    }
+    closedir(dir);
+}
+
 // worker 主循环：一次性完成沙箱初始化，然后循环处理任务
 void worker_main(int cmd_fd, int res_fd, const SandboxConfig& cfg) {
+    // 0. 安全：关闭所有继承的非必要 fd（防止沙盒逃逸）
+    close_unneeded_fds_worker(cmd_fd, res_fd);
+    // 0b. stdin 重定向到 /dev/null
+    {
+        int devnull = open("/dev/null", O_RDONLY);
+        if (devnull >= 0) { dup2(devnull, STDIN_FILENO); close(devnull); }
+    }
     // ---- 一次性沙箱初始化（重活只做一次）----
     try {
         // worker 不收紧 RLIMIT_NPROC（需持续 fork 任务进程）；

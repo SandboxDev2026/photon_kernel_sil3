@@ -11,6 +11,9 @@ service SandboxService {
 
     // 获取池状态
     rpc GetPoolStatus(EmptyRequest) returns (PoolStatusResponse);
+
+    // 查询异步任务结果（ExecuteAsync 提交后用 task_id 查询）
+    rpc GetTaskResult(TaskResultRequest) returns (TaskResultResponse);
 }
 
 message SandboxRequest {
@@ -51,6 +54,21 @@ enum RiskLevel {
 }
 
 message EmptyRequest {}
+
+message TaskResultRequest {
+    string task_id = 1;
+}
+
+message TaskResultResponse {
+    bool found = 1;           // 任务是否存在
+    bool completed = 2;       // 是否已完成
+    bool success = 3;
+    string output = 4;
+    string error = 5;
+    int64 cpu_time_us = 6;
+    int64 memory_peak_bytes = 7;
+    int32 exit_code = 8;
+}
 
 // ===== 审计日志批量上报（Client Streaming）=====
 // 沙盒节点侧异步队列攒批，通过客户端流式 RPC 一次发送多条审计记录；
