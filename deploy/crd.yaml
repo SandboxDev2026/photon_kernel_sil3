@@ -1,0 +1,130 @@
+# SandboxPool CRD —— 声明式预热池（任务4）
+# 参考 OpenSandbox BatchSandbox Pool 的声明式编排设计
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: sandboxpools.sandbox.photon.io
+spec:
+  group: sandbox.photon.io
+  scope: Namespaced
+  names:
+    plural: sandboxpools
+    singular: sandboxpool
+    kind: SandboxPool
+    shortNames:
+      - sbp
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Risk
+          type: string
+          jsonPath: .spec.riskLevel
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              required:
+                - replicas
+              properties:
+                replicas:
+                  type: integer
+                  minimum: 0
+                  description: 期望常备的预热沙盒副本数
+                riskLevel:
+                  type: string
+                  enum: [LOW, MEDIUM, HIGH]
+                  default: MEDIUM
+                memoryLimit:
+                  type: string
+                  default: "256Mi"
+                cpuLimit:
+                  type: string
+                  default: "500m"
+                taskTimeoutMs:
+                  type: integer
+                  default: 5000
+                  minimum: 100
+                image:
+                  type: string
+                  description: 沙盒 worker 镜像（预置 python3/node 解释器）
+                readWhitelist:
+                  type: array
+                  items:
+                    type: string
+                  description: 允许只读访问的路径前缀
+                allowedSyscalls:
+                  type: array
+                  items:
+                    type: string
+                  description: 额外允许的系统调用名（追加到按风险等级生成的白名单）
+                scalePolicy:
+                  type: object
+                  properties:
+                    minReplicas:
+                      type: integer
+                      default: 1
+                    maxReplicas:
+                      type: integer
+                      default: 50
+                    targetUtilization:
+                      type: integer
+                      default: 70
+                      description: CPU 利用率超过该值触发扩容（%）
+            status:
+              type: object
+              properties:
+                readyReplicas:
+                  type: integer
+                idleReplicas:
+                  type: integer
+                busyReplicas:
+                  type: integer
+                totalReplicas:
+                  type: integer
+                phase:
+                  type: string
+                  enum: [Creating, Ready, Scaling, Degraded, Failed]
+                observedGeneration:
+                  type: integer
+                lastUpdateTime:
+                  type: string
+                  format: date-time
+---
+# 示例：python-agent 预热池
+apiVersion: sandbox.photon.io/v1alpha1
+kind: SandboxPool
+metadata:
+  name: python-agent-pool
+spec:
+  replicas: 10
+  riskLevel: MEDIUM
+  memoryLimit: "256Mi"
+  cpuLimit: "500m"
+  taskTimeoutMs: 5000
+  image: photon/sandbox-worker:4.14
+  readWhitelist:
+    - "/etc/ssl/certs/"
+    - "/usr/share/zoneinfo/"
+  allowedSyscalls:
+    - "read"
+    - "write"
+    - "exit_group"
+  scalePolicy:
+    minReplicas: 5
+    maxReplicas: 50
+    targetUtilization: 70

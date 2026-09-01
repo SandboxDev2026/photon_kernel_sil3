@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package photon.sandbox;
+
+service SandboxService {
+    // 同步执行任务
+    rpc Execute(SandboxRequest) returns (SandboxResponse);
+
+    // 异步执行任务（不等待结果，通过回调或轮询获取）
+    rpc ExecuteAsync(SandboxRequest) returns (AsyncResponse);
+
+    // 获取池状态
+    rpc GetPoolStatus(EmptyRequest) returns (PoolStatusResponse);
+}
+
+message SandboxRequest {
+    string task_name = 1;
+    string task_code = 2;              // 实际要执行的代码/命令
+    int32 timeout_ms = 3;              // 超时时间（毫秒）
+    RiskLevel risk_level = 4;
+    map<string, string> environment = 5; // 环境变量
+    int32 runner = 8;                  // 0=python3, 1=node, 2=shell（默认 0）
+}
+
+message SandboxResponse {
+    bool success = 1;
+    string output = 2;                 // 标准输出
+    string error = 3;                  // 标准错误
+    int64 cpu_time_us = 4;
+    int64 memory_peak_bytes = 5;
+    int32 exit_code = 6;
+    string error_code = 7;             // 错误码字符串
+}
+
+message AsyncResponse {
+    string task_id = 1;
+    string status = 2;                 // "pending", "running", "completed", "failed"
+}
+
+message PoolStatusResponse {
+    int32 total = 1;
+    int32 idle = 2;
+    int32 busy = 3;
+    int32 failed = 4;
+}
+
+enum RiskLevel {
+    LOW = 0;
+    MEDIUM = 1;
+    HIGH = 2;
+}
+
+message EmptyRequest {}
