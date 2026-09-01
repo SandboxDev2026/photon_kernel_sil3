@@ -124,6 +124,9 @@ set(SANDBOX_SOURCES
   src/sandbox/http_server.cpp
   src/sandbox/crypto_utils.cpp
   src/sandbox/sandbox_backend.cpp
+  src/sandbox/capability_token.cpp
+  src/sandbox/resource_proxy.cpp
+  src/sandbox/risk_scorer.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -161,6 +164,13 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_enhanced photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME EnhancedTests COMMAND test_enhanced)
+
+  # 新一代架构模块测试（CapabilityToken/ResourceProxy/RiskScorer）
+  add_executable(test_new_modules
+    tests/test_new_modules.cpp
+  )
+  target_link_libraries(test_new_modules photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME NewModuleTests COMMAND test_new_modules)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
