@@ -56,9 +56,14 @@ docker run --rm photon-sandbox ./build/test_enhanced
 - Landlock 路径白名单（kernel 6.6 applied=yes）：单元测试全过
 - **metrics_server**：curl 真实请求 /metrics 返回标准 Prometheus 格式
 - **e2b_gateway**：curl 完整流程 create→run(`print(42)`)→stdout=42→list→delete 全过
-- 总计：**99 测试通过 + 2 跳过**（C++ 77 通过+2跳过 / Python Operator 14 / Python gRPC契约 8）
+- 总计：**102 测试通过 + 2 跳过**（C++ 94 通过+2跳过 / Python Operator 14 / gRPC端到端8项实测）
 - 含 **2 个 HTTP 服务端到端验证**（metrics_server /metrics + e2b_gateway 完整流程）
 - 含 **gRPC 端到端契约测试**（Python 模拟服务端，验证 Execute/ExecuteAsync/GetPoolStatus/BatchReport流式 真实通信）
+- **CapabilityToken 票据权限**（HMAC签名/运行时撤销/路径白名单）：17 单元测试全过
+- **ResourceProxy 资源代理**（CredentialVault/空白通行证/文件网络代理）：单元测试全过
+- **RiskScorer 风险打分**（15+危险模式/自动分级/推荐安全域）：单元测试全过
+- **gRPC 服务端端到端实测**（Python gRPC，非模拟）：启动真实服务端，客户端验证 Execute(`print(42)`→42)、ExecuteAsync+GetTaskResult、GetPoolStatus、AuditService.BatchReport(5条全部接收)、超时kill(TIMEOUT) 共8项全过
+- **统一验证脚本** `scripts/verify_all.sh`：一键验证全部模块，输出能力矩阵
 - 含 **K8s Operator 纯函数测试**（_build_worker_pod_template/_build_worker_deployment，不需要 K8s 集群）
 
 ### ⚠️ 代码完整但当前环境无法端到端实测
@@ -67,12 +72,12 @@ docker run --rm photon-sandbox ./build/test_enhanced
 | 模块 | 已做的验证 | 未实测原因 | 有条件环境的验证方法 |
 |---|---|---|---|
 | **CRIU 进程级快照** | 命令构造审查 + **7 个 C++ 单元测试**（检测逻辑、降级路径、配置级快照往返）、运行时检测降级 | 容器无 criu 二进制、无 root | `sudo apt install criu` → 跑 `criu dump -t <pid>` → `criu restore` |
-| **gRPC 服务端/客户端** | proto 编译通过 + **8 个 Python 端到端契约测试**（模拟服务端，验证 Execute/ExecuteAsync/GetPoolStatus/BatchReport流式 真实通信+序列化+超时）；Execute 代码审查确认真实路由到 `pool_->execute()` | 容器无 gRPC C++ 库（源码编译 40+ 分钟超时） | `sudo apt install libgrpc++-dev protobuf-compiler-grpc` → `cmake -DPHOTON_ENABLE_GRPC=ON` → 启动 sandbox_server + sandbox_client |
-| **gRPC Audit BatchReport 流式** | ClientWriter+WritesDone+Finish 代码审查、100ms deadline | 同上，无 gRPC 库 | 启动 audit 服务端，客户端批量发送 AuditRecord，验证流式上报 |
+| **gRPC C++ 服务端/客户端** | C++ 代码完整（sandbox_server/sandbox_client/sandbox_service，修复use-after-free+并发控制）；**Python gRPC 服务端已端到端实测通过**（8项：Execute/Async/PoolStatus/BatchReport/Timeout） | 容器无 gRPC C++ 库（Python gRPC 已替代验证） | `sudo apt install libgrpc++-dev protobuf-compiler-grpc` → `cmake -DPHOTON_ENABLE_GRPC=ON` → 启动 sandbox_server + sandbox_client |
+| **gRPC Audit BatchReport 流式** | **Python gRPC 已端到端实测**：客户端流式发送5条AuditRecord，服务端ok_count=5全部接收；C++ audit_grpc_sink代码完整（异步队列+批量+失败落盘重试） | C++ gRPC库未安装（Python已验证） | 启动C++ audit服务端，验证C++客户端流式上报 |
 | **K8s Operator Reconcile** | Python 语法 OK + **14 个纯函数单元测试**（pod模板默认值/自定义spec/安全上下文/白名单环境变量/downwardAPI、deployment replicas/ownerRef/selector匹配、CRD YAML有效性）、Reconcile 循环代码审查 | 无 K8s 集群、无 kopf | `pip install kopf kubernetes` → `kind create cluster` → `kubectl apply -f deploy/crd.yaml` → `kopf run operator.py` |
 | **eBPF 网络管控** | 条件编译路径 + **7 个 C++ 单元测试**（单例、status、无权限降级、未加载add/remove返回false、set_deny_all、NetworkRule字段）、运行时能力检测 | 无 CAP_BPF、无 libbpf、unprivileged_bpf_disabled=1 | 有 root 环境 `apt install libbpf-dev` → 加载 eBPF 程序 → 验证白名单规则 |
 
-**结论**：核心沙盒能力（隔离、预热、代码执行、合规、审计、Prometheus、E2B 网关）已实测可用；CRIU/gRPC/K8s/eBPF 为"代码完整待生产环境验证"，不应在未验证前宣称生产可用。
+**结论**：核心沙盒能力（隔离、预热、代码执行、合规、审计、Prometheus、E2B网关、gRPC端到端、CapabilityToken、ResourceProxy、RiskScorer）已实测可用；CRIU/K8s Operator端到端/eBPF/Firecracker MicroVM为"代码完整待特权环境验证"，不应在未验证前宣称生产可用。运行 `./scripts/verify_all.sh` 一键验证全部模块。
 
 ## 目录结构
 ```
