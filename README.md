@@ -126,6 +126,22 @@ cmake --build build -j$(nproc)
 
 服务端 `Execute` RPC 真实路由到 `SandboxPoolV2`（预 fork 预热池），支持 Python3 / Node / Shell 三种 runner，返回真实 stdout/stderr/CPU/内存/退出码。
 
+### gRPC 服务端跑不起来的说明
+
+我们的代码是完整的，只是当前容器环境缺少 gRPC 库。仓库上传之后，在你的本机（有 sudo 权限）执行：
+
+```bash
+sudo apt update
+sudo apt install -y protobuf-compiler libprotobuf-dev libgrpc++-dev protobuf-compiler-grpc
+cmake -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j4
+
+# 启动 gRPC 沙盒服务端
+./build/sandbox_server
+# 新开终端运行客户端
+./build/sandbox_client
+```
+
 ### 基准测试（可选，需 google/benchmark）
 
 ```bash
