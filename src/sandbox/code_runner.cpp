@@ -5,6 +5,7 @@
 #include <sys/resource.h>
 #include <signal.h>
 #include <unistd.h>
+#include <sys/prctl.h>
 #include <fcntl.h>
 #include <cstring>
 #include <cstdio>
@@ -104,7 +105,10 @@ CodeRunResult run_user_code(const CodeRunRequest& req, size_t process_limit) {
         dup2(in_pipe[0], 0);          // stdin = 代码管道
         dup2(out_fd, 1);              // stdout → 文件
         dup2(out_fd, 2);              // stderr → 文件
-        // 解释器路径白名单（硬编码）
+        // 安全加固：禁止 setuid 提权 + 禁止 ptrace/dump
+        (void)prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+        (void)prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+        // 解释器路径白名单（硬编码；生产环境建议用 Landlock LANDLOCK_ACCESS_FS_EXECUTE 内核强制）
         execl(path, path, "-", static_cast<char*>(nullptr));
         _exit(127);
     }

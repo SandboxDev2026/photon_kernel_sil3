@@ -123,6 +123,7 @@ set(SANDBOX_SOURCES
   src/sandbox/landlock.cpp
   src/sandbox/http_server.cpp
   src/sandbox/crypto_utils.cpp
+  src/sandbox/sandbox_backend.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}

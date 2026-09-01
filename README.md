@@ -5,6 +5,40 @@ C++17 实现的多级安全隔离沙盒（fork + seccomp-bpf + rlimit），含�
 本工程整合自三段连续设计对话（基础重写版 → 容器编排与冷启动优化蓝图 → 预热池 + gRPC Fast-Path 落地实现），
 并修复了对话代码中的若干可编译/运行问题（见文末「与原对话代码的差异」）。
 
+## 隔离等级与适用场景（重要）
+
+本工程提供**两种隔离后端**，按风险等级选择：
+
+| 后端 | 隔离强度 | 启动延迟 | 内存开销 | 适用场景 |
+|---|---|---|---|---|
+| **Process**（fork+seccomp） | 进程级，共享内核 | <2ms | ~100KB | 可信/半可信代码、内部工具、Agent沙盒 |
+| **MicroVM**（Firecracker） | 硬件级，独立内核 | <125ms | ~5MB | 公网不可信代码、多租户、强隔离需求 |
+
+**重要警告**：Process 后端共享宿主内核，内核漏洞可能导致沙盒逃逸。**公网多租户场景必须使用 MicroVM 后端**，Process 后端不适合直接运行完全不可信代码。
+
+MicroVM 后端需要：firecracker 二进制 + /dev/kvm + root 权限。详见 `docs/microvm_integration.md`。
+
+## 快速构建
+
+```bash
+# 一键构建（自动检测依赖，非 gRPC 模式）
+./scripts/build.sh --test
+
+# 启用 gRPC（需要 libgrpc++-dev）
+./scripts/build.sh --grpc --test
+
+# Docker 构建（推荐，环境一致）
+docker build -t photon-sandbox .
+docker run --rm photon-sandbox ./build/test_enhanced
+```
+
+构建依赖已简化：
+- OpenSSL 改为**可选**（无 OpenSSL 时用内置 crypto_utils fallback）
+- gRPC 改为**可选**（`-DPHOTON_ENABLE_GRPC=OFF` 跳过）
+- 统一构建脚本 `scripts/build.sh` 自动检测和安装依赖
+- Dockerfile 提供一致的构建环境
+- 端到端验证脚本 `scripts/verify_e2e.sh`（需要 root，验证 CRIU/eBPF/K8s/gRPC）
+
 ## 实测状态声明（诚实标注）
 
 本工程各模块按"是否在当前环境真实运行验证"分为两类。**代码写完 ≠ 功能可用**，以下为真实状态：
