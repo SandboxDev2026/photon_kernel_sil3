@@ -243,11 +243,16 @@ sudo apt install -y libbenchmark-dev
 - `AuditSanitizer`：敏感字段（默认 `code/token/secret/password/api_key/apikey/argv/command/cmdline/path`）
   保留首尾 2 字符、中间 `*` 打码；支持自定义 key。
 - `AuditLogger` 集成：`set_hmac_secret` 开启防篡改、`set_sanitize` 开启脱敏，落盘前先脱敏再封链。
-### 2. 审计异步批量上报（fluent-bit 风格）— `GrpcAuditSink`
+### 2. 审计异步批量上报（fluent-bit 风格 + gRPC ClientStreaming）— `GrpcAuditSink`
 - `report()` 仅入队（非阻塞）；后台线程按 `flush_interval`（默认 100ms）批量取队并发送，
   批量上限 `batch_max`；单次 gRPC 调用带 `rpc_timeout`（默认 100ms）超时，不阻塞主流程。
+- **已升级为 ClientStreaming 流式 RPC**（`proto/sandbox.proto` 新增 `AuditService.BatchReport(stream AuditRecord)`）：
+  客户端建立流后循环 `Write` 每条审计记录，`WritesDone` 后服务端返回 `BatchReportResp{ok_count, failed_count}`；
+  比逐条 unary 调用减少 RTT，适合高吞吐审计上报。
 - 失败重试：发送失败（或环境无 gRPC）的记录持久化到本地 `audit_spool.jsonl`，后台线程每轮
   先重试 spool、成功后从文件移除（原子重写：临时文件 + rename）。
+- 条件编译：检测到 `<grpcpp/grpcpp.h>` 才启用真实 stub 流式调用；无 gRPC 环境 `send_batch` 返回
+  false 驱动"失败落盘 + 重试"路径，保证审计不丢。
 ### 3. 跳数声明验证（对接第九条）— `JumpCounter`
 - `JumpHop` 新增证据字段 `rule_base_version`（下游规则库版本）与 `verification_digest`（校验层
   日志摘要）。

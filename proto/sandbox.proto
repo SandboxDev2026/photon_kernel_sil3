@@ -51,3 +51,22 @@ enum RiskLevel {
 }
 
 message EmptyRequest {}
+
+// ===== 审计日志批量上报（Client Streaming）=====
+// 沙盒节点侧异步队列攒批，通过客户端流式 RPC 一次发送多条审计记录；
+// 比逐条 unary 调用减少 RTT，适合高吞吐审计上报场景。
+service AuditService {
+    // 客户端流式批量上报：客户端连续 Write 多条 AuditRecord，结束后服务端返回汇总应答
+    rpc BatchReport(stream AuditRecord) returns (BatchReportResp);
+}
+
+message AuditRecord {
+    string event_id = 1;     // 审计事件唯一 ID（如 UUID 或哈希链前一个 hash）
+    int64 timestamp = 2;     // 事件时间戳（unix epoch 微秒）
+    string payload = 3;      // JSON 格式的审计事件内容（含 HMAC 哈希链等）
+}
+
+message BatchReportResp {
+    int32 ok_count = 1;      // 服务端成功接收的记录数
+    int32 failed_count = 2;  // 服务端拒绝/失败的记录数
+}

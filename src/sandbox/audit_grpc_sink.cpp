@@ -9,11 +9,10 @@
 #endif
 
 #ifdef PHOTON_AUDIT_GRPC_AVAILABLE
-// ===== 在启用 gRPC 的环境中，此处填充真实 stub 调用 =====
-// 参考（需与扩展后的 proto 匹配）：
-//   #include <grpcpp/grpcpp.h>
-//   #include "sandbox.grpc.pb.h"   // 扩展后的审计 RPC 生成代码
-//   static std::unique_ptr<AuditService::Stub> g_stub;
+// ===== gRPC ClientStreaming 批量审计上报 =====
+#include <grpcpp/grpcpp.h>
+#include "sandbox.grpc.pb.h"   // 含 AuditService.BatchReport(stream AuditRecord)
+static std::unique_ptr<photon::sandbox::AuditService::Stub> g_audit_stub;
 #endif
 
 namespace photon_kernel {
@@ -40,8 +39,10 @@ void GrpcAuditSink::init(const std::string& endpoint,
     rpc_timeout_ = rpc_timeout;
     spool_path_ = spool_path;
 #ifdef PHOTON_AUDIT_GRPC_AVAILABLE
-    // auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
-    // g_stub = AuditService::NewStub(channel);
+    {
+        auto channel = grpc::CreateChannel(endpoint, grpc::InsecureChannelCredentials());
+        g_audit_stub = photon::sandbox::AuditService::NewStub(channel);
+    }
     enabled_ = true;
 #else
     enabled_ = false;
@@ -71,22 +72,45 @@ void GrpcAuditSink::report(const std::string& json_line) {
     cv_.notify_one();
 }
 
-// ---- 批量发送 ----
-// gRPC 环境：以 rpc_timeout 超时逐条/批量调用 stub；当前骨架（无 gRPC）返回 false，
-// 使调用方走“失败落盘 + 定期重试”路径。
+// ---- 批量发送（gRPC ClientStreaming）----
+// gRPC 环境：通过 AuditService.BatchReport 客户端流式 RPC 一次发送多条审计记录；
+//   1. stub->BatchReport(&ctx) 建立流（带 rpc_timeout 截止时间，默认 100ms）
+//   2. 循环 stream->Write(AuditRecord) 发送每条记录
+//   3. stream->WritesDone() 通知服务端发送完毕
+//   4. stream->Finish(&resp) 读取 BatchReportResp，根据 failed_count 判断成败
+// 比逐条 unary 调用减少 RTT，适合高吞吐审计上报。
+// 无 gRPC 环境返回 false，使调用方走“失败落盘 + 定期重试”路径。
 bool GrpcAuditSink::send_batch(const std::vector<std::string>& records) {
     if (records.empty()) return true;
 #ifdef PHOTON_AUDIT_GRPC_AVAILABLE
-    // bool all_ok = true;
-    // for (const auto& rec : records) {
-    //     AuditRecord req; req.set_json(rec);
-    //     AuditAck ack; grpc::ClientContext ctx;
-    //     ctx.set_deadline(std::chrono::system_clock::now() + rpc_timeout_);  // 100ms 超时
-    //     if (!g_stub->ReportAudit(&ctx, req, &ack).ok()) all_ok = false;
-    // }
-    // return all_ok;
-    (void)records;
-    return false;  // 骨架：待填充 stub 后改为真实返回值
+    if (!g_audit_stub) return false;
+    grpc::ClientContext ctx;
+    ctx.set_deadline(std::chrono::system_clock::now() + rpc_timeout_);
+    // 建立客户端流式 RPC
+    std::unique_ptr<grpc::ClientWriter<photon::sandbox::AuditRecord>> stream(
+        g_audit_stub->BatchReport(&ctx));
+    if (!stream) return false;
+    // 流式写入每条审计记录（payload 为 JSON 行）
+    bool write_ok = true;
+    for (const auto& rec : records) {
+        photon::sandbox::AuditRecord req;
+        req.set_payload(rec);
+        if (!stream->Write(req)) {
+            write_ok = false;
+            break;
+        }
+    }
+    if (!write_ok) {
+        photon::sandbox::BatchReportResp dummy;
+        (void)stream->Finish(&dummy);
+        return false;
+    }
+    stream->WritesDone();
+    // 读取服务端汇总应答
+    photon::sandbox::BatchReportResp resp;
+    grpc::Status status = stream->Finish(&resp);
+    if (!status.ok()) return false;
+    return resp.failed_count() == 0;
 #else
     (void)records;
     (void)rpc_timeout_;
