@@ -331,7 +331,293 @@ echo "结论: 普通容器环境只能编译+单元测试，端到端验证需�
 
 ---
 
-## 八、相关文档
+## 八、云厂商虚拟化开启指南
+
+StrongPool Firecracker KVM 需要宿主机开启硬件虚拟化。各云厂商配置方式：
+
+### AWS
+- **Bare Metal 实例**：`m5.metal`、`c5.metal`、`z1d.metal` 等，直接暴露 `/dev/kvm`
+- **普通实例**：默认不开启嵌套虚拟化，需要使用 bare metal 实例
+- **验证**：`ls -la /dev/kvm`，bare metal 实例应存在
+- **推荐**：生产 StrongPool 使用 `c5.metal` 或 `m5zn.metal`
+
+### GCP
+- **嵌套虚拟化**：需要在创建实例时开启 `--enable-nested-virtualization`
+- **限制**：仅支持 Intel Haswell 及以上 CPU 平台
+- **创建命令**：
+  ```bash
+  gcloud compute instances create photon-sandbox \
+    --enable-nested-virtualization \
+    --min-cpu-platform "Intel Haswell" \
+    --machine-type n2-standard-8
+  ```
+- **验证**：`egrep -c '(vmx|svm)' /proc/cpuinfo` 应 > 0
+
+### Azure
+- **嵌套虚拟化**：支持 Dv3/Ev3 及以上系列
+- **限制**：需要 v4 或更高版本的 VM
+- **推荐**：`D4s v5`、`E4s v5` 或更高
+- **验证**：`Get-WindowsFeature Hyper-V`（Windows）或 `ls /dev/kvm`（Linux）
+
+### 阿里云 / 腾讯云
+- **裸金属实例**：阿里云 `ecs.ebm` 系列、腾讯云 `标准型裸金属`
+- **嵌套虚拟化**：部分实例规格支持，需提交工单开通
+- **验证**：`ls -la /dev/kvm`
+
+### 本地开发环境
+- **VMware Workstation/Fusion**：虚拟机设置 → 处理器 → 勾选"虚拟化 Intel VT-x/EPT"
+- **VirtualBox**：`VBoxManage modifyvm "VM名" --nested-hw-virt on`
+- **KVM 宿主机**：直接可用，`/dev/kvm` 默认存在
+- **WSL2**：Windows 11 22H2+ 支持嵌套虚拟化，`/dev/kvm` 可用
+
+---
+
+## 九、容器特权配置
+
+### Docker 特权容器（开发测试用）
+
+```bash
+# 最小特权集（推荐）
+docker run -it --rm \
+  --cap-add=SYS_ADMIN \
+  --cap-add=NET_ADMIN \
+  --cap-add=SYS_RESOURCE \
+  --cap-add=CHOWN \
+  --cap-add=DAC_OVERRIDE \
+  --cap-add=MKNOD \
+  --cap-add=AUDIT_WRITE \
+  --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  --device /dev/fuse \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  photon-sandbox:latest
+
+# 完整特权（最简单，但安全风险高，仅限开发）
+docker run -it --rm --privileged \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  photon-sandbox:latest
+```
+
+### Docker + KVM（StrongPool 开发测试）
+
+```bash
+docker run -it --rm \
+  --privileged \
+  --device /dev/kvm \
+  --device /dev/net/tun \
+  -v /sys/fs/cgroup:/sys/fs/cgroup:rw \
+  photon-sandbox:latest
+```
+
+### Kubernetes 特权 Pod（开发测试用）
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: photon-sandbox
+spec:
+  containers:
+  - name: sandbox
+    image: photon-sandbox:latest
+    securityContext:
+      privileged: true  # 开发测试用，生产应使用精确 capabilities
+      capabilities:
+        add:
+          - SYS_ADMIN
+          - NET_ADMIN
+          - SYS_RESOURCE
+          - CHOWN
+          - DAC_OVERRIDE
+          - MKNOD
+          - AUDIT_WRITE
+    resources:
+      limits:
+        devices.kubevirt.io/kvm: "1"  # KVM 设备（需 KubeVirt/device plugin）
+    volumeMounts:
+      - name: cgroup
+        mountPath: /sys/fs/cgroup
+  volumes:
+    - name: cgroup
+      hostPath:
+        path: /sys/fs/cgroup
+```
+
+> **注意**：生产环境不建议在容器内运行沙盒管理器。推荐裸机/VM 直接运行，容器仅用于开发测试和 CI。
+
+---
+
+## 十、setcap 能力验证与故障排查
+
+### setcap 完整能力列表
+
+```bash
+# LightPool 基础沙盒所需 capabilities
+sudo setcap \
+  cap_sys_admin,cap_net_admin,cap_sys_resource,cap_chown,\
+cap_dac_override,cap_mknod,cap_audit_write+ep \
+  /path/to/photon_sandbox
+
+# eBPF 支持（额外添加）
+sudo setcap cap_bpf+ep /path/to/photon_sandbox
+
+# 验证 capabilities
+getcap /path/to/photon_sandbox
+# 输出: /path/to/photon_sandbox = cap_audit_write,cap_bpf,cap_chown,cap_dac_override,cap_mknod,cap_net_admin,cap_sys_admin,cap_sys_resource+ep
+```
+
+### 常见错误及解决
+
+| 错误现象 | 可能原因 | 解决方案 |
+|---------|---------|---------|
+| `clone(CLONE_NEWNS) 失败: Operation not permitted` | 缺少 `CAP_SYS_ADMIN` | `sudo setcap cap_sys_admin+ep` 或 root 运行 |
+| `unshare --net 失败` | 缺少 `CAP_NET_ADMIN` | `sudo setcap cap_net_admin+ep` |
+| `cgroup 写入失败: Permission denied` | cgroup 目录不可写 | root 运行或预先配置 cgroup 所有权 |
+| `pivot_root 失败: Invalid argument` | 缺少 `CAP_SYS_ADMIN` 或根目录不在独立 mount | root 运行，确保沙盒根在独立 mount namespace |
+| `seccomp 加载失败` | 内核不支持 seccomp 或缺少权限 | 检查 `CONFIG_SECCOMP=y`，root 运行 |
+| `Landlock 失败: Function not implemented` | 内核 < 5.10 或未启用 Landlock LSM | 升级内核，检查 `/sys/kernel/security/lsm` |
+| `eBPF 加载失败: Operation not permitted` | 缺少 `CAP_BPF` 或 `unprivileged_bpf_disabled=1` | `sudo setcap cap_bpf+ep` 或 `sysctl -w kernel.unprivileged_bpf_disabled=0` |
+| `/dev/kvm 不存在` | 硬件虚拟化未开启或 BIOS 禁用 | BIOS 开启 VT-x/AMD-V，云厂商使用 bare metal/嵌套虚拟化 |
+| `CRIU dump 失败: 不支持的配置` | 非 root 模式限制太多 | root 运行 CRIU，或简化进程状态 |
+| `setcap 后二进制无法执行` | 文件系统挂载了 `nosuid`（capabilities 需要 suid 支持） | 重新挂载 `mount -o remount,suid /path` |
+
+### 能力调试技巧
+
+```bash
+# 查看当前进程的完整 capabilities
+capsh --print
+
+# 查看特定进程的 capabilities
+cat /proc/<pid>/status | grep Cap
+
+# 解码 CapEff 十六进制值
+capsh --decode=000001ffffffffff
+
+# 跟踪系统调用失败（定位缺少哪个 capability）
+strace -e trace=clone,unshare,mount,pivot_root,seccomp,setrlimit \
+  ./photon_sandbox 2>&1 | grep EPERM
+
+# 检查 namespace 支持
+ls -la /proc/self/ns/
+```
+
+---
+
+## 十一、systemd 服务完整配置（生产推荐）
+
+```ini
+# /etc/systemd/system/photon-sandbox.service
+[Unit]
+Description=Photon Kernel Sandbox Manager
+Documentation=https://github.com/SandboxDev2026/photon_kernel_sil3
+After=network.target cgroupfs-mount.service
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/photon_sandbox \
+  --config /etc/photon/config.yaml \
+  --log-level info
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+StartLimitBurst=5
+StartLimitInterval=60
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=65536
+LimitMEMLOCK=infinity
+
+# 安全加固（沙盒管理器本身的加固）
+NoNewPrivileges=false  # 需要创建 namespace，不能设为 true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=false  # 需要访问 /dev/kvm, /dev/net/tun
+ProtectKernelTunables=false
+ProtectKernelModules=false
+ProtectControlGroups=false
+RestrictSUIDSGID=false
+RestrictNamespaces=false  # 需要创建 namespace
+RestrictRealtime=true
+MemoryDenyWriteExecute=false
+
+# 审计
+AuditBackend=systemd
+
+# 环境变量（密钥外部注入）
+Environment=PHOTON_HMAC_KEY=/etc/photon/hmac.key
+Environment=PHOTON_CONFIG=/etc/photon/config.yaml
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 配套配置文件
+
+```yaml
+# /etc/photon/config.yaml
+sandbox:
+  light_pool:
+    max_workers: 256
+    prewarmed: 16
+    default_memory_mb: 256
+    default_cpu_cores: 1.0
+  strong_pool:
+    enabled: true
+    max_concurrent_vms: 100
+    default_memory_mb: 512
+    firecracker_path: /usr/local/bin/firecracker
+    kernel_path: /var/lib/photon/kernel/vmlinux
+    rootfs_path: /var/lib/photon/rootfs/base.ext4
+  network:
+    egress:
+      enabled: true
+      mode: gateway  # gateway | direct | disabled
+      gateway_addr: 10.0.99.1
+      dns:
+        hijack: true
+        authorized_servers:
+          - 1.1.1.1
+          - 8.8.8.8
+    internal_blocklist:
+      enabled: true
+      cidrs:
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 169.254.0.0/16
+  audit:
+    hmac_key_file: /etc/photon/hmac.key
+    spool_dir: /var/log/photon/audit-spool
+    max_spool_size_mb: 1024
+    rotation_interval_hours: 24
+  metrics:
+    enabled: true
+    listen_addr: 0.0.0.0:9090
+    path: /metrics
+```
+
+### 密钥文件权限
+
+```bash
+# HMAC 密钥文件（仅 root 可读）
+sudo mkdir -p /etc/photon
+sudo openssl rand -hex 32 | sudo tee /etc/photon/hmac.key
+sudo chmod 0400 /etc/photon/hmac.key
+sudo chown root:root /etc/photon/hmac.key
+
+# 验证
+ls -la /etc/photon/hmac.key
+# -r-------- 1 root root 65 Sep  2 12:00 /etc/photon/hmac.key
+```
+
+---
+
+## 十二、相关文档
 
 - [PRODUCTION_CHECKLIST.md](../PRODUCTION_CHECKLIST.md) — 生产上线补齐任务清单
 - [docs/strong_pool_microvm.md](strong_pool_microvm.md) — StrongPool MicroVM 三大限制解决方案
