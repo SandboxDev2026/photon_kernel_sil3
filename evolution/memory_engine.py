@@ -80,7 +80,7 @@ class ShortTermMemory:
     def add(self, content: str, importance: float = 0.5,
             tags: List[str] = None, source_task: str = "") -> str:
         """添加记忆，返回记忆 ID"""
-        mem_id = hashlib.md5(f"{content}{time.time()}".encode()).hexdigest()[:12]
+        mem_id = hashlib.md5(f"{content}{time.time()}".encode(), usedforsecurity=False).hexdigest()[:12]
         item = MemoryItem(
             content=content,
             memory_type="short",
@@ -172,7 +172,7 @@ class MidTermMemory:
             tags: List[str] = None, source_task: str = "",
             compressed_from: str = "") -> str:
         """添加中期记忆"""
-        mem_id = hashlib.md5(f"{content}{time.time()}".encode()).hexdigest()[:12]
+        mem_id = hashlib.md5(f"{content}{time.time()}".encode(), usedforsecurity=False).hexdigest()[:12]
         item = MemoryItem(
             content=content,
             memory_type="mid",

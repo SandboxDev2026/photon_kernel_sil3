@@ -50,7 +50,7 @@ class SwarmAgent:
     - 适应度（任务成功率）
     - 任务历史
     """
-    agent_id: str = field(default_factory=lambda: f"agent_{hashlib.md5(str(time.time()).encode()).hexdigest()[:8]}")
+    agent_id: str = field(default_factory=lambda: f"agent_{hashlib.md5(str(time.time()).encode(), usedforsecurity=False).hexdigest()[:8]}")
     name: str = ""
     role: AgentRole = AgentRole.EMPLOYED
     skills: List[str] = field(default_factory=list)  # Skill ID 列表
