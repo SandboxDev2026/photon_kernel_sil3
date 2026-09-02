@@ -187,6 +187,8 @@ photon_kernel_sil3_v414/
 | `docs/microvm_integration.md` | Firecracker 集成设计 |
 | `docs/escape_security_audit.md` | 逃逸安全审计报告 |
 | `docs/privileged_e2e_guide.md` | 特权环境端到端验证指南 |
+| `docs/privilege_requirements.md` | 权限要求与特权环境说明（KVM/CAP_BPF/CRIU/LightPool） |
+| `docs/microvm_advanced_features.md` | AgentENV 四大高级特性（内存气球/暂停恢复/状态分叉/分层镜像） |
 | `docs/CHANGELOG_full.md` | 完整变更历史 |
 | `SECURITY.md` | 安全策略与漏洞响应 |
 | `CONTRIBUTING.md` | 贡献指南 |
