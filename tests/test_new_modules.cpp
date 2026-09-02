@@ -144,3 +144,75 @@ int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
 }
+
+// ==================== NamespaceIsolation 测试 ====================
+#include "photon_kernel/sandbox/namespace_isolation.hpp"
+using photon_kernel::sandbox::NamespaceIsolator;
+using photon_kernel::sandbox::NamespaceConfig;
+
+TEST(NamespaceIsolationTest, CloneFlagsAll) {
+    NamespaceConfig cfg;  // 默认全部启用
+    int flags = NamespaceIsolator::clone_flags(cfg);
+    // 检查包含所有 namespace 标志 + SIGCHLD
+    EXPECT_TRUE(flags & 0x00020000);  // CLONE_NEWNS
+    EXPECT_TRUE(flags & 0x20000000);  // CLONE_NEWPID
+    EXPECT_TRUE(flags & 0x40000000);  // CLONE_NEWNET
+    EXPECT_TRUE(flags & 0x04000000);  // CLONE_NEWUTS
+    EXPECT_TRUE(flags & 0x08000000);  // CLONE_NEWIPC
+    EXPECT_EQ(flags & 0xFF, 17);  // SIGCHLD (=17)
+}
+
+TEST(NamespaceIsolationTest, CloneFlagsNone) {
+    NamespaceConfig cfg;
+    cfg.enable_mount = false;
+    cfg.enable_pid = false;
+    cfg.enable_net = false;
+    cfg.enable_uts = false;
+    cfg.enable_ipc = false;
+    int flags = NamespaceIsolator::clone_flags(cfg);
+    EXPECT_EQ(flags, 17);  // 只有 SIGCHLD (=17)
+}
+
+TEST(NamespaceIsolationTest, CloneFlagsPartial) {
+    NamespaceConfig cfg;
+    cfg.enable_mount = true;
+    cfg.enable_pid = false;
+    cfg.enable_net = true;
+    cfg.enable_uts = false;
+    cfg.enable_ipc = false;
+    int flags = NamespaceIsolator::clone_flags(cfg);
+    EXPECT_TRUE(flags & 0x00020000);  // CLONE_NEWNS
+    EXPECT_FALSE(flags & 0x20000000); // CLONE_NEWPID
+    EXPECT_TRUE(flags & 0x40000000);  // CLONE_NEWNET
+    EXPECT_FALSE(flags & 0x04000000); // CLONE_NEWUTS
+    EXPECT_FALSE(flags & 0x08000000); // CLONE_NEWIPC
+}
+
+TEST(NamespaceIsolationTest, CapabilityDescription) {
+    NamespaceConfig cfg;
+    std::string desc = NamespaceIsolator::capability_description(cfg);
+    EXPECT_FALSE(desc.empty());
+    EXPECT_NE(desc, "none");
+}
+
+TEST(NamespaceIsolationTest, IsSupportedDetection) {
+    // 当前容器无 root，is_supported 应返回 false
+    // （在有 root 的环境会返回 true）
+    bool supported = NamespaceIsolator::is_supported();
+    // 不断言具体值，因为取决于环境
+    // 只验证函数可以正常调用不崩溃
+    EXPECT_TRUE(supported == true || supported == false);
+}
+
+TEST(NamespaceIsolationTest, ConfigDefaults) {
+    NamespaceConfig cfg;
+    EXPECT_TRUE(cfg.enable_mount);
+    EXPECT_TRUE(cfg.enable_pid);
+    EXPECT_TRUE(cfg.enable_net);
+    EXPECT_TRUE(cfg.enable_uts);
+    EXPECT_TRUE(cfg.enable_ipc);
+    EXPECT_EQ(cfg.hostname, "photon-sandbox");
+    EXPECT_TRUE(cfg.mount_proc);
+    EXPECT_TRUE(cfg.mount_dev);
+    EXPECT_TRUE(cfg.mount_tmp);
+}

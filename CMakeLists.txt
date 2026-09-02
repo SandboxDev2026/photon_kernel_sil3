@@ -127,6 +127,7 @@ set(SANDBOX_SOURCES
   src/sandbox/capability_token.cpp
   src/sandbox/resource_proxy.cpp
   src/sandbox/risk_scorer.cpp
+  src/sandbox/namespace_isolation.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
