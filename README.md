@@ -67,6 +67,7 @@ docker run --rm photon-sandbox ./build/test_enhanced
 - **GPU/CUDA隔离**：CUDA_VISIBLE_DEVICES隔离 + /dev/nvidia* cgroup设备限制 + 显存/利用率限制 + MPS支持；nvidia-smi自动检测
 - **VNC桌面**：Xvfb虚拟显示 + x11vnc + noVNC/websockify浏览器访问 + openbox窗口管理器 + 应用启动/截图
 - **Firecracker StrongPool完善**：完整VM配置(machine-config/boot-source/drives/network/vsock) + 快照API + KVM检测自动降级
+- **四层架构**：Control Plane(TaskSpec+RuntimeSelector) + Execution Plane(4种运行时Container/gVisor/MicroVM/Wasm) + Policy+Identity(网络/凭证/工具/审批) + Evidence+Release(证据收集+独立发布闸门)；23测试通过，详见 docs/four_layer_architecture.md
 - **裸机一键验证**：scripts/verify_baremetal.sh，10大模块端到端验证(CRIU/eBPF/gRPC/K8s/Firecracker/Landlock/GPU/VNC/Namespace)
 - **Namespace 隔离（6种）**：User(uid/gid映射) + Mount(pivot_root) + PID + Network + UTS + IPC，对齐 NsJail/bubblewrap 地基；无 root 自动降级
 - **统一验证脚本** `scripts/verify_all.sh`：一键验证全部模块，输出能力矩阵

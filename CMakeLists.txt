@@ -134,6 +134,11 @@ set(SANDBOX_SOURCES
   agent/orchestrator.cpp
   src/sandbox/gpu_isolation.cpp
   src/sandbox/vnc_desktop.cpp
+  src/sandbox/runtime_selector.cpp
+  src/sandbox/task_spec.cpp
+  src/sandbox/runtime_interface.cpp
+  src/sandbox/policy_engine.cpp
+  src/sandbox/evidence_release.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -189,6 +194,16 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_agent_orchestrator photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME AgentOrchestratorTests COMMAND test_agent_orchestrator)
+
+  # 四层架构测试
+  add_executable(test_four_layer_arch
+    tests/test_four_layer_arch.cpp
+  )
+  target_include_directories(test_four_layer_arch PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(test_four_layer_arch photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME FourLayerArchTests COMMAND test_four_layer_arch)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
