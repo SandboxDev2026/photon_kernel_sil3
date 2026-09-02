@@ -94,3 +94,22 @@ __all__ = [
     "ReflectionPrompts",
     "LLMJudgePrompts",
 ]
+
+# 新增模块（Skill自演进 + 分层记忆 + 蜂群多智能体）
+from .skill_evolver import SkillEvolver, SkillExecutionRecord, SkillEvolutionEvent
+from .memory_engine import AutoGeneticMemory, ShortTermMemory, MidTermMemory, MemoryItem
+from .swarm import JiuwenSwarm, SwarmAgent, AgentRole, TaskAssignment
+
+__all__.extend([
+    "SkillEvolver",
+    "SkillExecutionRecord",
+    "SkillEvolutionEvent",
+    "AutoGeneticMemory",
+    "ShortTermMemory",
+    "MidTermMemory",
+    "MemoryItem",
+    "JiuwenSwarm",
+    "SwarmAgent",
+    "AgentRole",
+    "TaskAssignment",
+])
