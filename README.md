@@ -317,4 +317,11 @@ PhotonBox/
 
 ## 许可证
 
-Apache-2.0
+**Modified MIT License**（修改版 MIT，借鉴 Kimi K2 / Moonshot AI）
+
+- 个人、研究、商业使用均免费
+- 允许修改、分发、创建衍生作品
+- 无需开源你的修改
+- **仅大规模商业使用需署名**：月活 >1 亿 或 月收入 >2000 万美元 的商业产品/服务，需在用户界面显著显示 "Powered by PhotonBox"
+
+详见 [LICENSE](LICENSE)。
