@@ -4,17 +4,13 @@
 #include <cstddef>
 #include <chrono>
 #include <string>
+#include "risk_level.hpp"
 #include <vector>
 
 namespace photon_kernel {
 namespace sandbox {
 
 // 参考：NsJail 多级安全策略（google/nsjail）
-enum class RiskLevel {
-    LOW,      // 允许网络、文件读写
-    MEDIUM,   // 只读文件，无网络
-    HIGH      // 仅基础系统调用，禁止文件操作
-};
 
 std::string risk_level_to_string(RiskLevel level);
 

@@ -331,3 +331,8 @@ if(PHOTON_ENABLE_GRPC)
                     "libgrpc++-dev protobuf-compiler-grpc")
   endif()
 endif()
+
+# 统一守护进程（不依赖 gRPC C++ 库，内置 HTTP API + Metrics + 审计 + 能力探测）
+add_executable(photon_sandbox_daemon server/photon_sandbox_daemon.cpp)
+target_include_directories(photon_sandbox_daemon PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(photon_sandbox_daemon photon_sandbox Threads::Threads)

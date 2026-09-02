@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include "risk_level.hpp"
 namespace photon_kernel {
 namespace sandbox {
 enum class PoolType { LIGHT, STRONG, ONCE };
@@ -49,10 +50,6 @@ inline const char* security_block_type_name(SecurityBlockType t) {
         case SecurityBlockType::GATEWAY_DOMAIN: return "gateway_domain";
         case SecurityBlockType::GATEWAY_CONNECTION_LIMIT: return "gateway_connection_limit";
     } return "unknown";
-}
-enum class RiskLevel { LOW, MEDIUM, HIGH, CRITICAL };
-inline const char* risk_level_name(RiskLevel r) {
-    switch (r) { case RiskLevel::LOW: return "low"; case RiskLevel::MEDIUM: return "medium"; case RiskLevel::HIGH: return "high"; case RiskLevel::CRITICAL: return "critical"; } return "unknown";
 }
 class Metrics {
 public:

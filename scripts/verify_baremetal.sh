@@ -264,6 +264,75 @@ else
     skip "Mount namespace 需要 root"
 fi
 echo ""
+# ==================== 11. photon_sandbox_daemon 守护进程 ====================
+echo "--- 11. photon_sandbox_daemon 统一守护进程 ---"
+if [ -f ./build/photon_sandbox_daemon ]; then
+    # 启动守护进程（后台）
+    ./build/photon_sandbox_daemon         --listen-http 127.0.0.1:18080         --metrics-port 19090         --light-pool-min 2         --light-pool-max 10         --enable-strong-pool false         --enable-ebpf-filter false         >/tmp/photon_daemon_test.log 2>&1 &
+    DAEMON_PID=$!
+    sleep 2
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+        pass "守护进程启动成功 (PID=$DAEMON_PID)"
+    else
+        fail "守护进程启动失败"
+        cat /tmp/photon_daemon_test.log | tail -10
+    fi
+    # 测试 /health 端点
+    if command -v curl >/dev/null 2>&1; then
+        HEALTH=$(curl -s http://127.0.0.1:18080/health 2>/dev/null || echo "")
+        if echo "$HEALTH" | grep -q '"status":"ok"'; then
+            pass "/health 端点正常"
+        else
+            fail "/health 端点异常: $HEALTH"
+        fi
+        # 测试 /capabilities 端点
+        CAPS=$(curl -s http://127.0.0.1:18080/capabilities 2>/dev/null || echo "")
+        if echo "$CAPS" | grep -q '"kernel"'; then
+            pass "/capabilities 端点正常"
+        else
+            fail "/capabilities 端点异常"
+        fi
+        # 测试 /pool/status 端点
+        POOL=$(curl -s http://127.0.0.1:18080/pool/status 2>/dev/null || echo "")
+        if echo "$POOL" | grep -q 'light_pool'; then
+            pass "/pool/status 端点正常"
+        else
+            fail "/pool/status 端点异常"
+        fi
+        # 测试 /execute 端点
+        EXEC=$(curl -s -X POST http://127.0.0.1:18080/execute             -H "Content-Type: application/json"             -d '{"code":"print(1+1)","language":"python"}' 2>/dev/null || echo "")
+        if echo "$EXEC" | grep -q '"status"'; then
+            pass "/execute 端点正常（代码执行API）"
+        else
+            fail "/execute 端点异常: $EXEC"
+        fi
+        # 测试 /metrics 端点
+        METRICS=$(curl -s http://127.0.0.1:19090/metrics 2>/dev/null || echo "")
+        if echo "$METRICS" | grep -q 'photon_'; then
+            pass "/metrics Prometheus 端点正常"
+        else
+            fail "/metrics 端点异常"
+        fi
+    else
+        skip "curl 未安装，跳过 HTTP 端点测试"
+    fi
+    # 优雅关闭
+    if kill -0 "$DAEMON_PID" 2>/dev/null; then
+        kill -TERM "$DAEMON_PID" 2>/dev/null || true
+        sleep 1
+        if ! kill -0 "$DAEMON_PID" 2>/dev/null; then
+            pass "守护进程优雅关闭成功"
+        else
+            kill -9 "$DAEMON_PID" 2>/dev/null || true
+            fail "守护进程优雅关闭超时（已强制杀死）"
+        fi
+    fi
+    rm -f /tmp/photon_daemon_test.log
+else
+    skip "photon_sandbox_daemon 未编译（需要 cmake 构建）"
+fi
+echo ""
+
 # ==================== 汇总 ====================
 echo "=========================================="
 echo "  验证结果汇总"

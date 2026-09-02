@@ -10,16 +10,11 @@
 //   - 加密挖矿（cryptominer 特征、大量 CPU 循环）
 //   - 数据外泄（大文件读取+网络发送组合）
 #include <string>
+#include "risk_level.hpp"
 #include <vector>
 #include <regex>
 namespace photon_kernel {
 namespace sandbox {
-enum class RiskLevel {
-    LOW,       // 可信代码，纯计算，无 IO → DOMAIN_TRUSTED + LightPool
-    MEDIUM,    // 有文件/网络访问但可控 → DOMAIN_TRUSTED + LightPool
-    HIGH,      // 有进程/提权/逃逸尝试 → DOMAIN_UNTRUSTED + StrongPool (MicroVM)
-    CRITICAL,  // 明确恶意（挖矿/数据外泄/内核攻击）→ DOMAIN_SANDBOX_ONCE + 一次性销毁
-};
 struct RiskScanResult {
     RiskLevel level = RiskLevel::LOW;
     int score = 0;                          // 0-100
