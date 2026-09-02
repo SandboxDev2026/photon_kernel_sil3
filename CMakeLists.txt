@@ -139,6 +139,8 @@ set(SANDBOX_SOURCES
   src/sandbox/runtime_interface.cpp
   src/sandbox/policy_engine.cpp
   src/sandbox/evidence_release.cpp
+  src/sandbox/network_isolation.cpp
+  src/sandbox/isolation_gateway.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -204,6 +206,16 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_four_layer_arch photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME FourLayerArchTests COMMAND test_four_layer_arch)
+
+  # 网络分层防御测试
+  add_executable(test_network_isolation
+    tests/test_network_isolation.cpp
+  )
+  target_include_directories(test_network_isolation PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(test_network_isolation photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME NetworkIsolationTests COMMAND test_network_isolation)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)

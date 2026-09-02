@@ -1,0 +1,186 @@
+# K8s NetworkPolicy —— 网段隔离（第一层防御）
+#
+# 把全部沙盒执行实例放到独立子网/命名空间，不和业务应用、数据库、中间件在同一个子网。
+# 通过 NetworkPolicy 禁止沙盒访问内网业务网段，仅允许出站外网指定白名单。
+#
+# 网段规划示例：
+#   业务网段：10.0.1.0/24 （API、数据库、Redis）
+#   沙盒执行网段：10.0.99.0/24
+#   防火墙ACL：10.0.99.0/24 禁止访问 10.0.1.0/24
+#
+# 注意：网段隔离是第一道防线，不能单独作为唯一防护。
+# 必须叠加网关隔离（第二层）+ 沙盒实例内网隔离（第三层）。
+
+---
+# 沙盒命名空间
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: photon-sandbox
+  labels:
+    name: photon-sandbox
+    network-isolation: strict
+
+---
+# 沙盒 Pod 默认拒绝所有出入站流量
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photon-sandbox-default-deny
+  namespace: photon-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photon-sandbox
+  policyTypes:
+  - Ingress
+  - Egress
+  # 默认拒绝所有（不写 rules 即拒绝全部）
+
+---
+# 允许沙盒访问隔离网关（第二层防御）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photon-sandbox-allow-gateway
+  namespace: photon-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photon-sandbox
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: photon-gateway
+    ports:
+    - protocol: TCP
+      port: 8080
+    - protocol: TCP
+      port: 8443
+
+---
+# 允许 DNS（强制走网关 DNS，防止自定义 DNS 绕过）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photon-sandbox-allow-dns
+  namespace: photon-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photon-sandbox
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - podSelector:
+        matchLabels:
+          app: photon-gateway
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+
+---
+# 隔离网关：允许出站到外网白名单
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photon-gateway-egress-whitelist
+  namespace: photon-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photon-gateway
+  policyTypes:
+  - Egress
+  egress:
+  # 允许 HTTPS 出站（网关做域名白名单过滤）
+  - to:
+    - ipBlock:
+        cidr: 0.0.0.0/0
+        except:
+        # 禁止访问所有内网网段（网关层再次校验）
+        - 10.0.0.0/8
+        - 172.16.0.0/12
+        - 192.168.0.0/16
+        - 127.0.0.0/8
+        - 169.254.0.0/16  # 云元数据地址（高危）
+        - 100.64.0.0/10
+        - 192.0.0.0/24
+        - 192.0.2.0/24
+        - 198.51.100.0/24
+        - 203.0.113.0/24
+        - 224.0.0.0/4
+        - 240.0.0.0/4
+    ports:
+    - protocol: TCP
+      port: 443
+    - protocol: TCP
+      port: 80
+  # 允许 DNS
+  - to:
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+
+---
+# 禁止沙盒 Pod 之间直接通信（防止横向移动）
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photon-sandbox-no-internal-communication
+  namespace: photon-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photon-sandbox
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  # 只允许网关访问，不允许沙盒之间互通
+  - from:
+    - podSelector:
+        matchLabels:
+          app: photon-gateway
+  egress:
+  # 只允许访问网关，不允许沙盒之间互通
+  - to:
+    - podSelector:
+        matchLabels:
+          app: photon-gateway
+
+---
+# 沙盒池 CRD（配合 Operator 使用）
+apiVersion: sandbox.photon.dev/v1
+kind: SandboxPool
+metadata:
+  name: default-pool
+  namespace: photon-sandbox
+spec:
+  replicas: 10
+  riskLevel: MEDIUM
+  network:
+    mode: isolated-gateway
+    gatewayAddress: photon-gateway.photon-sandbox.svc.cluster.local:8080
+    dnsServer: photon-gateway.photon-sandbox.svc.cluster.local
+    blockInternalNetworks: true
+    allowedDomains:
+    - "*.pypi.org"
+    - "*.npmjs.com"
+    - "*.github.com"
+    - "*.docker.io"
+  resources:
+    cpu: "1"
+    memory: 256Mi
+    ephemeralStorage: 1Gi
+  ttl: 300s
