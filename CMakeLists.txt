@@ -143,6 +143,7 @@ set(SANDBOX_SOURCES
   src/sandbox/isolation_gateway.cpp
   src/sandbox/strong_pool.cpp
   src/sandbox/artifact_export.cpp
+  src/sandbox/microvm_advanced.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -228,6 +229,16 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_strong_pool photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME StrongPoolTests COMMAND test_strong_pool)
+
+  # MicroVM 高级特性测试（AgentENV 借鉴）
+  add_executable(test_microvm_advanced
+    tests/test_microvm_advanced.cpp
+  )
+  target_include_directories(test_microvm_advanced PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(test_microvm_advanced photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME MicroVmAdvancedTests COMMAND test_microvm_advanced)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
