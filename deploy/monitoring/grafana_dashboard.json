@@ -1,0 +1,110 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "photon-sandbox",
+    "title": "Photon Sandbox 监控面板",
+    "tags": ["sandbox", "security", "photon"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "title": "沙盒实例数",
+        "type": "stat",
+        "gridPos": {"x": 0, "y": 0, "w": 6, "h": 4},
+        "targets": [{"expr": "photon_sandbox_active_instances", "legendFormat": "活跃实例"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 500}]}}}
+      },
+      {
+        "id": 2,
+        "title": "任务执行 QPS",
+        "type": "stat",
+        "gridPos": {"x": 6, "y": 0, "w": 6, "h": 4},
+        "targets": [{"expr": "rate(photon_sandbox_tasks_total[5m])", "legendFormat": "QPS"}],
+        "fieldConfig": {"defaults": {"unit": "reqps"}}
+      },
+      {
+        "id": 3,
+        "title": "执行延迟 P99",
+        "type": "stat",
+        "gridPos": {"x": 12, "y": 0, "w": 6, "h": 4},
+        "targets": [{"expr": "histogram_quantile(0.99, rate(photon_sandbox_execution_duration_seconds_bucket[5m]))", "legendFormat": "P99"}],
+        "fieldConfig": {"defaults": {"unit": "s", "thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.1}, {"color": "red", "value": 1}]}}}
+      },
+      {
+        "id": 4,
+        "title": "逃逸拦截事件",
+        "type": "stat",
+        "gridPos": {"x": 18, "y": 0, "w": 6, "h": 4},
+        "targets": [{"expr": "increase(photon_sandbox_escape_attempts_total[1h])", "legendFormat": "1小时内"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}}}
+      },
+      {
+        "id": 5,
+        "title": "各池活跃实例",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 4, "w": 12, "h": 8},
+        "targets": [
+          {"expr": "photon_sandbox_active_instances{pool=\"light\"}", "legendFormat": "LightPool"},
+          {"expr": "photon_sandbox_active_instances{pool=\"strong\"}", "legendFormat": "StrongPool"}
+        ]
+      },
+      {
+        "id": 6,
+        "title": "任务成功率",
+        "type": "timeseries",
+        "gridPos": {"x": 12, "y": 4, "w": 12, "h": 8},
+        "targets": [{"expr": "sum(rate(photon_sandbox_tasks_total{status=\"success\"}[5m])) / sum(rate(photon_sandbox_tasks_total[5m]))", "legendFormat": "成功率"}],
+        "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}}
+      },
+      {
+        "id": 7,
+        "title": "内网访问拦截",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 12, "w": 8, "h": 6},
+        "targets": [{"expr": "increase(photon_sandbox_network_blocks_total[5m])", "legendFormat": "拦截次数"}],
+        "description": "eBPF/seccomp 拦截的内网 RFC1918 + 云元数据访问"
+      },
+      {
+        "id": 8,
+        "title": "能力降级事件",
+        "type": "timeseries",
+        "gridPos": {"x": 8, "y": 12, "w": 8, "h": 6},
+        "targets": [{"expr": "increase(photon_sandbox_capability_downgrades_total[1h])", "legendFormat": "降级次数"}],
+        "description": "KVM/CAP_BPF/CRIU 等能力不可用时的自动降级"
+      },
+      {
+        "id": 9,
+        "title": "审计队列堆积",
+        "type": "timeseries",
+        "gridPos": {"x": 16, "y": 12, "w": 8, "h": 6},
+        "targets": [{"expr": "photon_sandbox_audit_spool_size", "legendFormat": "spool 队列大小"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1000}, {"color": "red", "value": 10000}]}}}
+      },
+      {
+        "id": 10,
+        "title": "资源使用 - CPU",
+        "type": "timeseries",
+        "gridPos": {"x": 0, "y": 18, "w": 8, "h": 6},
+        "targets": [{"expr": "rate(photon_sandbox_cpu_usage_seconds_total[5m])", "legendFormat": "CPU 使用"}]
+      },
+      {
+        "id": 11,
+        "title": "资源使用 - 内存",
+        "type": "timeseries",
+        "gridPos": {"x": 8, "y": 18, "w": 8, "h": 6},
+        "targets": [{"expr": "photon_sandbox_memory_usage_bytes", "legendFormat": "内存使用"}]
+      },
+      {
+        "id": 12,
+        "title": "僵尸实例数",
+        "type": "stat",
+        "gridPos": {"x": 16, "y": 18, "w": 8, "h": 6},
+        "targets": [{"expr": "photon_sandbox_zombie_instances", "legendFormat": "僵尸实例"}],
+        "fieldConfig": {"defaults": {"thresholds": {"steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}}}
+      }
+    ]
+  }
+}

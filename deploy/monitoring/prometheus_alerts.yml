@@ -1,0 +1,132 @@
+groups:
+  - name: photon-sandbox-security
+    rules:
+      - alert: SandboxEscapeAttempt
+        expr: increase(photon_sandbox_escape_attempts_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "检测到沙盒逃逸尝试"
+          description: "5分钟内检测到 {{ $value }} 次逃逸尝试。可能的seccomp绕过/namespace逃逸。立即调查审计日志。"
+          runbook: "docs/operations/incident_response_runbook.md#escape"
+
+      - alert: InternalNetworkBlocked
+        expr: increase(photon_sandbox_network_blocks_total[1m]) > 10
+        for: 2m
+        labels:
+          severity: warning
+          category: security
+        annotations:
+          summary: "内网访问被大量拦截"
+          description: "1分钟内 {{ $value }} 次内网访问被eBPF/seccomp拦截。可能是沙盒被攻破后尝试横向移动。"
+          runbook: "docs/operations/incident_response_runbook.md#network-block"
+
+      - alert: MetadataServiceAccessAttempt
+        expr: increase(photon_sandbox_network_blocks_total{destination="metadata"}[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "尝试访问云元数据服务"
+          description: "检测到访问 169.254.169.254 的尝试。这是高危行为，可能是窃取云凭证。"
+          runbook: "docs/operations/incident_response_runbook.md#metadata"
+
+  - name: photon-sandbox-availability
+    rules:
+      - alert: HighRiskTaskDowngraded
+        expr: increase(photon_sandbox_high_risk_downgrades_total[5m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+          category: security
+        annotations:
+          summary: "高风险任务被降级到LightPool"
+          description: "高风险任务被静默降级到进程沙盒！这是严重安全事故。KVM可能不可用。"
+          runbook: "docs/operations/incident_response_runbook.md#downgrade"
+
+      - alert: CapabilityDowngrade
+        expr: increase(photon_sandbox_capability_downgrades_total[1h]) > 0
+        for: 0m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: "沙盒能力降级"
+          description: "检测到能力降级事件（KVM/CAP_BPF/CRIU不可用）。相关功能已自动禁用。"
+          runbook: "docs/operations/incident_response_runbook.md#capability"
+
+      - alert: SandboxDaemonDown
+        expr: up{job="photon-sandbox"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          category: availability
+        annotations:
+          summary: "沙盒守护进程下线"
+          description: "photon_sandbox_daemon 已超过1分钟无响应。"
+
+      - alert: TaskSuccessRateLow
+        expr: sum(rate(photon_sandbox_tasks_total{status="success"}[5m])) / sum(rate(photon_sandbox_tasks_total[5m])) < 0.9
+        for: 5m
+        labels:
+          severity: warning
+          category: availability
+        annotations:
+          summary: "任务成功率低于90%"
+          description: "过去5分钟任务成功率为 {{ $value | humanizePercentage }}。"
+
+  - name: photon-sandbox-resource
+    rules:
+      - alert: AuditSpoolOverflow
+        expr: photon_sandbox_audit_spool_size > 10000
+        for: 5m
+        labels:
+          severity: warning
+          category: operations
+        annotations:
+          summary: "审计spool队列堆积"
+          description: "审计日志本地队列超过10000条。gRPC上报可能失败，磁盘可能被打满。"
+          runbook: "docs/operations/incident_response_runbook.md#audit-spool"
+
+      - alert: DiskWatermarkCritical
+        expr: photon_sandbox_disk_usage_percent > 90
+        for: 2m
+        labels:
+          severity: critical
+          category: operations
+        annotations:
+          summary: "审计磁盘水位超过90%"
+          description: "审计日志磁盘使用率 {{ $value }}%。已进入CRITICAL水位，非关键审计事件停止写入。"
+
+      - alert: ZombieInstances
+        expr: photon_sandbox_zombie_instances > 5
+        for: 5m
+        labels:
+          severity: warning
+          category: operations
+        annotations:
+          summary: "僵尸沙盒实例超过5个"
+          description: "检测到 {{ $value }} 个僵尸实例。资源回收可能失效。"
+
+      - alert: HighCPULoad
+        expr: rate(photon_sandbox_cpu_usage_seconds_total[5m]) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+          category: resource
+        annotations:
+          summary: "沙盒CPU使用率超过80%"
+          description: "持续高CPU负载，可能是恶意代码耗尽资源或正常高峰。"
+
+      - alert: ExecutionLatencyHigh
+        expr: histogram_quantile(0.99, rate(photon_sandbox_execution_duration_seconds_bucket[5m])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          category: performance
+        annotations:
+          summary: "执行延迟P99超过5秒"
+          description: "P99执行延迟 {{ $value }}s。预热池可能未命中或资源不足。"
