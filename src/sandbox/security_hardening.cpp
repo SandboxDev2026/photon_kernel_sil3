@@ -13,6 +13,16 @@
 #include <unistd.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <pwd.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#include <linux/seccomp.h>
+#include <linux/filter.h>
+#include <linux/audit.h>
+#include <vector>
+#include <iostream>
+#include <grp.h>
+#include <sys/syscall.h>
 namespace photon_kernel {
 namespace sandbox {
 // ==================== TaskSpecValidator ====================
@@ -402,16 +412,100 @@ void ReleaseGateService::stop() {
     unlink(config_.socket_path.c_str());
 }
 bool ReleaseGateService::drop_privileges() {
-    // 降权到 nobody/nogroup
-    // 实际实现需要 setuid/setgid，这里简化
+    // 真正的降权实现：setuid/setgid 到 nobody + 清除环境 + 限制资源
+    struct passwd* pw = getpwnam(config_.run_as_user.c_str());
+    if (!pw) {
+        std::cerr << "[ReleaseGate] WARNING: user '" << config_.run_as_user
+                  << "' not found, cannot drop privileges\n";
+        return false;
+    }
+    uid_t uid = pw->pw_uid;
+    gid_t gid = pw->pw_gid;
+    if (setgroups(0, nullptr) != 0) {
+        std::cerr << "[ReleaseGate] setgroups failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    if (setgid(gid) != 0) {
+        std::cerr << "[ReleaseGate] setgid(" << gid << ") failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    if (setuid(uid) != 0) {
+        std::cerr << "[ReleaseGate] setuid(" << uid << ") failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    // 验证无法恢复 root
+    if (setuid(0) == 0 || seteuid(0) == 0) {
+        std::cerr << "[ReleaseGate] FATAL: privilege restoration possible!\n";
+        _exit(1);
+    }
+    // 清除敏感环境变量
+    unsetenv("LD_PRELOAD");
+    unsetenv("LD_LIBRARY_PATH");
+    unsetenv("LD_DEBUG");
+    unsetenv("PATH");
+    setenv("PATH", "/usr/bin:/bin", 1);
+    setenv("HOME", pw->pw_dir, 1);
+    setenv("USER", config_.run_as_user.c_str(), 1);
+    umask(0077);
+    // 限制资源（防止 DoS）
+    struct rlimit rl;
+    rl.rlim_cur = rl.rlim_max = 64;
+    setrlimit(RLIMIT_NOFILE, &rl);
+    rl.rlim_cur = rl.rlim_max = 16;
+    setrlimit(RLIMIT_NPROC, &rl);
+    rl.rlim_cur = rl.rlim_max = 64 * 1024 * 1024;
+    setrlimit(RLIMIT_AS, &rl);
+    rl.rlim_cur = rl.rlim_max = 0;
+    setrlimit(RLIMIT_CORE, &rl);
+    std::cerr << "[ReleaseGate] Privileges dropped to " << config_.run_as_user
+              << " (uid=" << uid << ", gid=" << gid << ")\n";
     return true;
 }
+
 bool ReleaseGateService::apply_seccomp() {
-    // 闸门进程最小化 syscall 白名单
-    // 只允许：read, write, close, accept, recvfrom, sendto, exit, fstat
-    // 实际实现需要 seccomp-bpf，这里简化
+    // 真正的 seccomp-bpf 实现：最小化 syscall 白名单
+    if (prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0) {
+        std::cerr << "[ReleaseGate] PR_SET_NO_NEW_PRIVS failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    static const int allowed_syscalls[] = {
+        SYS_read, SYS_write, SYS_close, SYS_exit, SYS_exit_group,
+        SYS_fstat, SYS_newfstatat, SYS_lseek,
+        SYS_accept, SYS_accept4, SYS_recvfrom, SYS_sendto,
+        SYS_recvmsg, SYS_sendmsg, SYS_shutdown, SYS_getsockname,
+        SYS_brk, SYS_mmap, SYS_munmap, SYS_mprotect,
+        SYS_nanosleep, SYS_clock_nanosleep, SYS_poll, SYS_ppoll,
+        SYS_rt_sigreturn, SYS_rt_sigaction, SYS_rt_sigprocmask,
+        SYS_getpid, SYS_gettid, SYS_tgkill, SYS_tkill,
+        SYS_futex, SYS_set_robust_list, SYS_get_robust_list,
+        SYS_rseq, SYS_prctl, SYS_arch_prctl,
+        SYS_uname, SYS_sysinfo, SYS_getrandom,
+        SYS_restart_syscall,
+    };
+    const int num_allowed = sizeof(allowed_syscalls) / sizeof(allowed_syscalls[0]);
+    std::vector<struct sock_filter> filter;
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, arch)));
+    filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    filter.push_back(BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)));
+    for (int i = 0; i < num_allowed; i++) {
+        int jump_to_allow = num_allowed - i;
+        filter.push_back(BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, allowed_syscalls[i], jump_to_allow, 0));
+    }
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS));
+    filter.push_back(BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW));
+    struct sock_fprog prog;
+    prog.len = static_cast<unsigned short>(filter.size());
+    prog.filter = filter.data();
+    if (prctl(PR_SET_SECCOMP, SECCOMP_MODE_FILTER, &prog) != 0) {
+        std::cerr << "[ReleaseGate] PR_SET_SECCOMP failed: " << strerror(errno) << "\n";
+        return false;
+    }
+    std::cerr << "[ReleaseGate] seccomp-bpf applied (" << num_allowed
+              << " syscalls allowed, all others KILL_PROCESS)\n";
     return true;
 }
+
 void ReleaseGateService::run() {
     while (running_.load()) {
         int client_fd = accept(server_fd_, nullptr, nullptr);

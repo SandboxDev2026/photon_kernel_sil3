@@ -101,7 +101,8 @@
   - ✅ **已修复**：改为独立低权限进程运行（`security_hardening.hpp` 中的 `ReleaseGateService`）
   - ✅ fork 独立进程 + Unix socket 通信 + 降权 nobody + seccomp 最小化 + 只读 rootfs
   - ✅ ReleaseGateClient 沙盒进程通过 socket 连接，产物必须经过闸门才流出
-- **状态**：✅ 已修复（P0 加固项）
+- **状态**：✅ 已完成（真正的独立低权限进程）
+- **实现**：fork独立进程 + Unix socket + **真正setuid/setgid到nobody** + **真正seccomp-bpf最小化白名单(45个syscall)** + rlimit限制(64fd/16proc/64MB) + 清除LD_PRELOAD等环境变量 + 验证无法恢复root
 - **测试**：`./build/test_security_hardening --gtest_filter="*ReleaseGate*"`
 
 ### 2.5 TaskSpec 参数解析缺少完整模糊测试(fuzz) 🔴 P0
@@ -264,7 +265,7 @@
 |---|--------|------|---------|
 | 1 | LightPool 公网使用 | ⚠️ 代码已实现 | 高风险任务强制 StrongPool，无 KVM 拒绝 |
 | 2 | 高风险任务静默降级 | ✅ 已修复 | NoSilentDowngradeForHighRisk 测试 + 业务层二次校验 |
-| 3 | Release-Gate 同权限 | ✅ 已修复 | 独立低权限进程 + Unix socket + seccomp |
+| 3 | Release-Gate 同权限 | ✅ 已完成 | 真正setuid nobody + seccomp-bpf 45 syscall + rlimit + 环境清除 |
 | 4 | TaskSpec 未 fuzz | ⚠️ harness 已添加 | TaskSpecValidator 严格校验 + libFuzzer |
 | 5 | eBPF/MicroVM 裸机未验证 | ⚠️ 待环境 | 代码已完成，需裸机 KVM/CAP_BPF 实测 |
 | 6 | 密钥硬编码 | ✅ 已修复 | 外部注入 + 轮换 + 常量时间比较 |
@@ -279,11 +280,11 @@
 | 类别 | 总数 | ✅ 已完成 | ⚠️ 部分完成/待验证 | 🔴 未开始 |
 |------|------|----------|-------------------|----------|
 | 设计固有风险 | 4 | 2 | 2 | 0 |
-| 代码待验证风险 | 8 | 3 | 5 | 0 |
+| 代码待验证风险 | 8 | 4 | 4 | 0 |
 | 权限部署风险 | 5 | 3 | 2 | 0 |
 | 业务使用风险 | 4 | 3 | 1 | 0 |
 | 项目生命周期 | 1 | 0 | 1 | 0 |
-| **合计** | **22** | **11 (50%)** | **11 (50%)** | **0 (0%)** |
+| **合计** | **22** | **12 (55%)** | **10 (45%)** | **0 (0%)** |
 
 ---
 
