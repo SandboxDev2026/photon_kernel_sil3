@@ -157,6 +157,8 @@ set(SANDBOX_SOURCES
   src/payload/shm_channel.cpp
   src/payload/payload_executor.cpp
   src/payload/code_compiler.cpp
+  src/sandbox/runtime_guard.cpp
+  src/sandbox/network_resource_guard.cpp
 )
 
 add_library(photon_sandbox STATIC ${SANDBOX_SOURCES})
@@ -356,4 +358,8 @@ if(BUILD_TESTING)
   add_executable(test_payload_executor tests/test_payload_executor.cpp)
   target_link_libraries(test_payload_executor photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME test_payload_executor COMMAND test_payload_executor)
+
+  add_executable(test_runtime_guard tests/test_runtime_guard.cpp)
+  target_link_libraries(test_runtime_guard photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME test_runtime_guard COMMAND test_runtime_guard)
 endif()
