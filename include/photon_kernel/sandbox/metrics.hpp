@@ -1,6 +1,6 @@
 #ifndef PHOTON_KERNEL_SANDBOX_METRICS_HPP
 #define PHOTON_KERNEL_SANDBOX_METRICS_HPP
-// 实时可观测性（核弹级优化四）：Prometheus 指标导出。
+// 实时可观测性（生产级优化四）：Prometheus 指标导出。
 // 全局原子计数器，记录沙盒运行时关键指标，可通过 /metrics 端点曝露。
 //
 // 指标列表：

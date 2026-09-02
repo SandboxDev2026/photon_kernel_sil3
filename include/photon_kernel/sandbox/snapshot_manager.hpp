@@ -1,6 +1,6 @@
 #ifndef PHOTON_KERNEL_SANDBOX_SNAPSHOT_MANAGER_HPP
 #define PHOTON_KERNEL_SANDBOX_SNAPSHOT_MANAGER_HPP
-// 快照克隆管理器（核弹级优化一）：
+// 快照克隆管理器（生产级优化一）：
 // 预 fork N 个"母沙盒"进程，每个母进程一次性完成 seccomp + rlimit 安装并长驻。
 // clone_sandbox() 时向母进程发 fork 指令，母进程直接 fork 出已就绪的子进程，
 // 跳过 seccomp 安装和 rlimit 设置，目标克隆延迟 <1ms。

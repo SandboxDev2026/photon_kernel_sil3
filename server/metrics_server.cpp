@@ -1,4 +1,4 @@
-// Prometheus /metrics HTTP 端点（核弹级优化三）。
+// Prometheus /metrics HTTP 端点（生产级优化三）。
 // 独立轻量 HTTP 服务器，监听 9090 端口，GET /metrics 返回标准 Prometheus 文本格式。
 // 不依赖 gRPC，可独立编译运行。
 #include <iostream>

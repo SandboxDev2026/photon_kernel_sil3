@@ -1,6 +1,6 @@
 #ifndef PHOTON_KERNEL_SANDBOX_LANDLOCK_HPP
 #define PHOTON_KERNEL_SANDBOX_LANDLOCK_HPP
-// Landlock 路径白名单（核弹级优化五）：
+// Landlock 路径白名单（生产级优化五）：
 // Linux 5.13+ 内核安全模块，限制进程可访问的文件系统路径。
 // 与 seccomp（syscall 级）互补：seccomp 限制能调用哪些 syscall，
 // Landlock 限制能访问哪些路径（即使 syscall 在白名单内）。

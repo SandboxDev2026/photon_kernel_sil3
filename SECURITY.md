@@ -45,10 +45,32 @@
 - **密钥扫描**：gitleaks（每次 PR，防止密钥泄露）
 
 ### 内核漏洞监控
-- `scripts/cve_monitor.py`：每日监控 Ubuntu Security API
-- 监控范围：Linux kernel、seccomp、Landlock、eBPF、cgroup、glibc
+- `scripts/cve_monitor.py`：监控 Linux kernel、OpenSSL、gRPC、Firecracker 等依赖 CVE
+- 监控范围：Linux kernel、seccomp、Landlock、eBPF、cgroup、glibc、OpenSSL、gRPC、Firecracker
 - 高危 CVE 触发飞书 webhook 告警
-- 配置攻击面：`configs/attack_surface.yaml`
+- 输出格式：文本报告 / JSON / CycloneDX SBOM
+- 运行：`python3 scripts/cve_monitor.py`（文本）/ `--json` / `--sbom` / `--report`
+
+**已知相关 CVE（10 个，含影响分析）**：
+
+| CVE | 组件 | 严重度 | 影响 | 缓解 |
+|-----|------|--------|------|------|
+| CVE-2024-1086 | Linux Kernel | Critical | nf_tables 双重释放，沙盒逃逸 | 升级内核 >=6.6.11；seccomp 拦截 nf_tables |
+| CVE-2022-0185 | Linux Kernel | High | fs/configfs 堆溢出 | 升级内核 >=5.16.2 |
+| CVE-2022-25840 | Linux Kernel | High | io_uring 引用计数 | seccomp 白名单不含 io_uring（已拦截） |
+| CVE-2023-0386 | Linux Kernel | High | OverlayFS 提权 | pivot_root+独立 mount namespace，不依赖 overlayfs |
+| CVE-2023-32233 | Linux Kernel | High | nf_tables 提权 | seccomp 拦截 nf_tables |
+| CVE-2024-22252 | Linux Kernel | High | USB 子系统提权 | 沙盒默认不挂载 USB |
+| CVE-2022-3602 | OpenSSL | High | X.509 缓冲区溢出 | 升级 >=3.0.7；项目有纯C++ crypto fallback |
+| CVE-2023-44487 | gRPC/HTTP2 | High | Rapid Reset DoS | 升级 gRPC >=1.59；网关有限流保护 |
+| CVE-2024-24762 | gRPC Python | Medium | Python gRPC DoS | 升级 grpcio >=1.62.0 |
+| CVE-2023-41051 | Firecracker | Medium | virtio-vsock 信息泄露 | 升级 Firecracker >=1.5.0 |
+
+**软件物料清单 (SBOM)**：
+- 格式：CycloneDX 1.5
+- 位置：`reports/sbom.cyclonedx.json`
+- 组件：12 个直接依赖（含版本、许可证、关键度）
+- 生成：`python3 scripts/cve_monitor.py --sbom > reports/sbom.cyclonedx.json`
 
 ## 已知安全边界（诚实声明）
 

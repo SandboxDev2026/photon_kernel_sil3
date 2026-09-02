@@ -1,6 +1,6 @@
 #ifndef PHOTON_KERNEL_SANDBOX_EBPF_NETWORK_HPP
 #define PHOTON_KERNEL_SANDBOX_EBPF_NETWORK_HPP
-// eBPF 出口流量白名单（核弹级优化二）。
+// eBPF 出口流量白名单（生产级优化二）。
 // CubeSandbox 用 eBPF 做出口流量管控；seccomp 只能完全禁止 socket，eBPF 可实现细粒度
 // IP/端口白名单（允许受限网络访问，其余出站流量在内核态丢弃）。
 //

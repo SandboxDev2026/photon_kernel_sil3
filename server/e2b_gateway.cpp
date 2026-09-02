@@ -1,4 +1,4 @@
-// E2B SDK 兼容 HTTP 网关（核弹级优化四）。
+// E2B SDK 兼容 HTTP 网关（生产级优化四）。
 // 把内部沙盒 API 映射成 E2B REST API，使所有 E2B 生态工具可直接对接。
 // 不依赖 gRPC，直接调用 PrewarmedWorker（真预 fork 预热池），可独立编译运行。
 //

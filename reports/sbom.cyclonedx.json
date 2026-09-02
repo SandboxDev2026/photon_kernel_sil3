@@ -1,0 +1,313 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-09-02T12:01:09.061612",
+    "tools": [
+      {
+        "vendor": "photon-kernel",
+        "name": "cve-monitor",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "name": "photon_kernel_sil3",
+      "version": "4.14.0",
+      "description": "C++17 安全隔离沙盒：fork+seccomp+namespace+eBPF+MicroVM",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "system",
+      "name": "Linux Kernel",
+      "version": ">=5.10",
+      "description": "seccomp, namespace, cgroup v2, eBPF, Landlock",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "critical"
+        }
+      ]
+    },
+    {
+      "type": "build",
+      "name": "GCC / Clang",
+      "version": ">=9.0",
+      "description": "C++17 编译",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-3.0 / Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "type": "build",
+      "name": "CMake",
+      "version": ">=3.16",
+      "description": "构建系统",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "medium"
+        }
+      ]
+    },
+    {
+      "type": "test",
+      "name": "Google Test",
+      "version": ">=1.10",
+      "description": "单元测试框架",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "low"
+        }
+      ]
+    },
+    {
+      "type": "crypto",
+      "name": "OpenSSL (可选)",
+      "version": ">=1.1.1",
+      "description": "HMAC-SHA256 审计哈希链（可选，有纯C++ fallback）",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "medium"
+        }
+      ]
+    },
+    {
+      "type": "network",
+      "name": "gRPC C++ (可选)",
+      "version": ">=1.50",
+      "description": "gRPC 审计上报（可选，Python gRPC 已替代）",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "medium"
+        }
+      ]
+    },
+    {
+      "type": "network",
+      "name": "libbpf (可选)",
+      "version": ">=1.0",
+      "description": "eBPF 程序加载（可选，需 CAP_BPF）",
+      "licenses": [
+        {
+          "license": {
+            "id": "LGPL-2.1 / BSD-2-Clause"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "medium"
+        }
+      ]
+    },
+    {
+      "type": "runtime",
+      "name": "Firecracker (可选)",
+      "version": ">=1.0",
+      "description": "MicroVM 强隔离后端（可选，需 KVM）",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "type": "runtime",
+      "name": "CRIU (可选)",
+      "version": ">=3.15",
+      "description": "进程级快照/恢复（可选，需 root）",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0"
+          }
+        }
+      ],
+      "scope": "optional",
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "medium"
+        }
+      ]
+    },
+    {
+      "type": "runtime",
+      "name": "Python 3",
+      "version": ">=3.8",
+      "description": "gRPC 服务端、K8s Operator、网关服务、测试脚本",
+      "licenses": [
+        {
+          "license": {
+            "id": "PSF"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "type": "network",
+      "name": "grpcio (Python)",
+      "version": ">=1.50",
+      "description": "Python gRPC 服务端/客户端（已端到端实测）",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "high"
+        }
+      ]
+    },
+    {
+      "type": "serialization",
+      "name": "protobuf (Python)",
+      "version": ">=4.0",
+      "description": "gRPC 消息序列化",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "properties": [
+        {
+          "name": "criticality",
+          "value": "high"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "Linux Kernel",
+      "dependsOn": []
+    },
+    {
+      "ref": "GCC / Clang",
+      "dependsOn": []
+    },
+    {
+      "ref": "CMake",
+      "dependsOn": []
+    },
+    {
+      "ref": "Google Test",
+      "dependsOn": []
+    },
+    {
+      "ref": "OpenSSL (可选)",
+      "dependsOn": []
+    },
+    {
+      "ref": "gRPC C++ (可选)",
+      "dependsOn": []
+    },
+    {
+      "ref": "libbpf (可选)",
+      "dependsOn": []
+    },
+    {
+      "ref": "Firecracker (可选)",
+      "dependsOn": []
+    },
+    {
+      "ref": "CRIU (可选)",
+      "dependsOn": []
+    },
+    {
+      "ref": "Python 3",
+      "dependsOn": []
+    },
+    {
+      "ref": "grpcio (Python)",
+      "dependsOn": []
+    },
+    {
+      "ref": "protobuf (Python)",
+      "dependsOn": []
+    }
+  ]
+}

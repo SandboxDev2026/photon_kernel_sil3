@@ -1,6 +1,6 @@
 #ifndef PHOTON_KERNEL_SANDBOX_CGROUP_MANAGER_HPP
 #define PHOTON_KERNEL_SANDBOX_CGROUP_MANAGER_HPP
-// cgroup v2 内核级资源隔离管理器（核弹级优化二）：
+// cgroup v2 内核级资源隔离管理器（生产级优化二）：
 // rlimit 是进程级软限制，cgroup v2 是内核级硬隔离。双管齐下，彻底锁死资源。
 //
 // 支持：内存上限（memory.max）、CPU 带宽（cpu.max）、进程数上限（pids.max）。
