@@ -132,6 +132,8 @@ set(SANDBOX_SOURCES
   agent/environment.cpp
   agent/agent_base.cpp
   agent/orchestrator.cpp
+  src/sandbox/gpu_isolation.cpp
+  src/sandbox/vnc_desktop.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}

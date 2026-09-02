@@ -64,6 +64,10 @@ docker run --rm photon-sandbox ./build/test_enhanced
 - **RiskScorer 风险打分**（15+危险模式/自动分级/推荐安全域）：单元测试全过
 - **gRPC 服务端端到端实测**（Python gRPC，非模拟）：启动真实服务端，客户端验证 Execute(`print(42)`→42)、ExecuteAsync+GetTaskResult、GetPoolStatus、AuditService.BatchReport(5条全部接收)、超时kill(TIMEOUT) 共8项全过
 - **多智能体编排层**：Supervisor总控(LangGraph) + Actor消息总线(AgentScope) + Environment环境代理(AgentVerse) + TaskDAG依赖(CrewAI)，全部对接 CapabilityToken + HMAC审计链 + E2B网关；11测试通过
+- **GPU/CUDA隔离**：CUDA_VISIBLE_DEVICES隔离 + /dev/nvidia* cgroup设备限制 + 显存/利用率限制 + MPS支持；nvidia-smi自动检测
+- **VNC桌面**：Xvfb虚拟显示 + x11vnc + noVNC/websockify浏览器访问 + openbox窗口管理器 + 应用启动/截图
+- **Firecracker StrongPool完善**：完整VM配置(machine-config/boot-source/drives/network/vsock) + 快照API + KVM检测自动降级
+- **裸机一键验证**：scripts/verify_baremetal.sh，10大模块端到端验证(CRIU/eBPF/gRPC/K8s/Firecracker/Landlock/GPU/VNC/Namespace)
 - **Namespace 隔离（6种）**：User(uid/gid映射) + Mount(pivot_root) + PID + Network + UTS + IPC，对齐 NsJail/bubblewrap 地基；无 root 自动降级
 - **统一验证脚本** `scripts/verify_all.sh`：一键验证全部模块，输出能力矩阵
 - 含 **K8s Operator 纯函数测试**（_build_worker_pod_template/_build_worker_deployment，不需要 K8s 集群）
