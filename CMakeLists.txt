@@ -141,6 +141,8 @@ set(SANDBOX_SOURCES
   src/sandbox/evidence_release.cpp
   src/sandbox/network_isolation.cpp
   src/sandbox/isolation_gateway.cpp
+  src/sandbox/strong_pool.cpp
+  src/sandbox/artifact_export.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
@@ -216,6 +218,16 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_network_isolation photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME NetworkIsolationTests COMMAND test_network_isolation)
+
+  # StrongPool MicroVM 工程落地测试
+  add_executable(test_strong_pool
+    tests/test_strong_pool.cpp
+  )
+  target_include_directories(test_strong_pool PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(test_strong_pool photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME StrongPoolTests COMMAND test_strong_pool)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
