@@ -150,6 +150,8 @@ set(SANDBOX_SOURCES
   src/sandbox/microvm_advanced.cpp
   src/sandbox/security_hardening.cpp
   src/sandbox/ebpf_network.cpp
+  src/sandbox/audit_disk_guard.cpp
+  src/sandbox/risk_enforcer.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
 )
