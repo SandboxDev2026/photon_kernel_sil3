@@ -154,6 +154,9 @@ set(SANDBOX_SOURCES
   src/sandbox/risk_enforcer.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
+  src/payload/shm_channel.cpp
+  src/payload/payload_executor.cpp
+  src/payload/code_compiler.cpp
 )
 
 add_library(photon_sandbox STATIC ${SANDBOX_SOURCES})
@@ -338,3 +341,19 @@ endif()
 add_executable(photon_sandbox_daemon server/photon_sandbox_daemon.cpp)
 target_include_directories(photon_sandbox_daemon PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(photon_sandbox_daemon photon_sandbox Threads::Threads)
+
+# ===== 任务载荷执行器 (Payload Executor) =====
+# Worker进程: 从共享内存读取任务, 执行, 写回结果
+add_executable(payload_worker src/payload/worker_main.cpp)
+target_link_libraries(payload_worker photon_sandbox Threads::Threads)
+
+# Injector进程: 编译用户代码, 注入共享内存, 读取结果
+add_executable(payload_injector src/payload/injector_main.cpp)
+target_link_libraries(payload_injector photon_sandbox Threads::Threads)
+
+# 载荷执行器测试
+if(BUILD_TESTING)
+  add_executable(test_payload_executor tests/test_payload_executor.cpp)
+  target_link_libraries(test_payload_executor photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME test_payload_executor COMMAND test_payload_executor)
+endif()
