@@ -21,6 +21,7 @@
 #include <sys/syscall.h>
 #include <sys/utsname.h>
 #include <sys/sysmacros.h>
+#include <sys/wait.h>
 #include <sched.h>
 #include <unistd.h>
 #include <cstring>
@@ -44,6 +45,9 @@
 #ifndef CLONE_NEWIPC
 #define CLONE_NEWIPC 0x08000000
 #endif
+#ifndef CLONE_NEWUSER
+#define CLONE_NEWUSER 0x10000000
+#endif
 #ifndef CLONE_NEWPID
 #define CLONE_NEWPID 0x20000000
 #endif
@@ -53,14 +57,28 @@
 namespace photon_kernel {
 namespace sandbox {
 bool NamespaceIsolator::is_supported() {
-    // 需要 root (EUID=0)
-    if (geteuid() != 0) return false;
     // 检查 /proc/self/ns 是否存在
     struct stat st;
     if (stat("/proc/self/ns", &st) != 0) return false;
-    // 检查内核是否支持 unshare
-    // (简化：有 root 且 /proc/self/ns 存在即认为支持)
-    return true;
+    // 检查 user namespace 是否可用（unprivileged 或 root）
+    // 方法：尝试 unshare(CLONE_NEWUSER) 看是否成功
+    pid_t pid = fork();
+    if (pid == 0) {
+        // 子进程：尝试 unshare user namespace
+        if (unshare(CLONE_NEWUSER) != 0) _exit(1);
+        // 写 uid_map 测试
+        std::ofstream uid_map("/proc/self/uid_map");
+        if (!uid_map.is_open()) _exit(1);
+        uid_map << "0 " << geteuid() << " 1\n";
+        uid_map.close();
+        _exit(0);
+    }
+    int status = 0;
+    waitpid(pid, &status, 0);
+    if (WIFEXITED(status) && WEXITSTATUS(status) == 0) return true;
+    // root 环境也支持（即使 userns 被禁用）
+    if (geteuid() == 0) return true;
+    return false;
 }
 int NamespaceIsolator::clone_flags(const NamespaceConfig& config) {
     int flags = SIGCHLD;  // 必须有 SIGCHLD，否则子进程退出不发信号
@@ -69,9 +87,18 @@ int NamespaceIsolator::clone_flags(const NamespaceConfig& config) {
     if (config.enable_net) flags |= CLONE_NEWNET;
     if (config.enable_uts) flags |= CLONE_NEWUTS;
     if (config.enable_ipc) flags |= CLONE_NEWIPC;
+    if (config.enable_user) flags |= CLONE_NEWUSER;
     return flags;
 }
 int NamespaceIsolator::setup_in_child(const NamespaceConfig& config) {
+    // 0. User namespace: 必须在其他 namespace 操作之前设置 uid/gid 映射
+    //    （设置后沙盒内获得 CAP_SYS_ADMIN，才能进行 mount/pivot_root）
+    if (config.enable_user) {
+        if (setup_user_namespace(config) != 0) {
+            std::cerr << "[namespace] setup_user_namespace failed\n";
+            return -1;
+        }
+    }
     // 1. Mount namespace: 使所有挂载私有
     if (config.enable_mount) {
         if (setup_mount_namespace(config) != 0) {
@@ -245,6 +272,38 @@ int NamespaceIsolator::setup_uts_namespace(const NamespaceConfig& config) {
     }
     return 0;
 }
+int NamespaceIsolator::setup_user_namespace(const NamespaceConfig& config) {
+    // User namespace 已由 clone(CLONE_NEWUSER) 创建
+    // 现在需要设置 uid/gid 映射
+    // 1. 禁止 setgroups（必须在写 gid_map 之前）
+    std::ofstream setgroups("/proc/self/setgroups");
+    if (setgroups.is_open()) {
+        setgroups << "deny\n";
+        setgroups.close();
+    }
+    // 2. 写 uid_map：沙盒内 uid → 宿主 uid
+    uint32_t outer_uid = config.uid_map_outer == 0 ? geteuid() : config.uid_map_outer;
+    if (write_id_map("/proc/self/uid_map", config.uid_map_inner, outer_uid, config.uid_map_count) != 0) {
+        std::cerr << "[namespace] write uid_map failed: " << strerror(errno) << "\n";
+        return -1;
+    }
+    // 3. 写 gid_map：沙盒内 gid → 宿主 gid
+    uint32_t outer_gid = config.gid_map_outer == 0 ? getegid() : config.gid_map_outer;
+    if (write_id_map("/proc/self/gid_map", config.gid_map_inner, outer_gid, config.gid_map_count) != 0) {
+        std::cerr << "[namespace] write gid_map failed: " << strerror(errno) << "\n";
+        return -1;
+    }
+    return 0;
+}
+
+int NamespaceIsolator::write_id_map(const std::string& path, uint32_t inner, uint32_t outer, uint32_t count) {
+    std::ofstream f(path);
+    if (!f.is_open()) return -1;
+    f << inner << " " << outer << " " << count << "\n";
+    f.close();
+    return 0;
+}
+
 std::string NamespaceIsolator::capability_description(const NamespaceConfig& config) {
     std::string desc;
     if (config.enable_mount) desc += "mount+pivot_root ";
@@ -252,6 +311,7 @@ std::string NamespaceIsolator::capability_description(const NamespaceConfig& con
     if (config.enable_net) desc += "net ";
     if (config.enable_uts) desc += "uts ";
     if (config.enable_ipc) desc += "ipc ";
+    if (config.enable_user) desc += "user ";
     if (desc.empty()) desc = "none";
     return desc;
 }

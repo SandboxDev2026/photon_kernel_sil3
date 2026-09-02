@@ -164,6 +164,7 @@ TEST(NamespaceIsolationTest, CloneFlagsAll) {
 
 TEST(NamespaceIsolationTest, CloneFlagsNone) {
     NamespaceConfig cfg;
+    cfg.enable_user = false;
     cfg.enable_mount = false;
     cfg.enable_pid = false;
     cfg.enable_net = false;

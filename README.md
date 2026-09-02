@@ -63,6 +63,7 @@ docker run --rm photon-sandbox ./build/test_enhanced
 - **ResourceProxy 资源代理**（CredentialVault/空白通行证/文件网络代理）：单元测试全过
 - **RiskScorer 风险打分**（15+危险模式/自动分级/推荐安全域）：单元测试全过
 - **gRPC 服务端端到端实测**（Python gRPC，非模拟）：启动真实服务端，客户端验证 Execute(`print(42)`→42)、ExecuteAsync+GetTaskResult、GetPoolStatus、AuditService.BatchReport(5条全部接收)、超时kill(TIMEOUT) 共8项全过
+- **Namespace 隔离（6种）**：User(uid/gid映射) + Mount(pivot_root) + PID + Network + UTS + IPC，对齐 NsJail/bubblewrap 地基；无 root 自动降级
 - **统一验证脚本** `scripts/verify_all.sh`：一键验证全部模块，输出能力矩阵
 - 含 **K8s Operator 纯函数测试**（_build_worker_pod_template/_build_worker_deployment，不需要 K8s 集群）
 
