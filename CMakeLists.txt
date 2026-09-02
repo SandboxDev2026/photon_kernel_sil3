@@ -128,13 +128,18 @@ set(SANDBOX_SOURCES
   src/sandbox/resource_proxy.cpp
   src/sandbox/risk_scorer.cpp
   src/sandbox/namespace_isolation.cpp
+  agent/message_bus.cpp
+  agent/environment.cpp
+  agent/agent_base.cpp
+  agent/orchestrator.cpp
   src/sandbox/ebpf_network.cpp
   ${V414_SOURCES}
   ${ACT_SOURCES}
 )
 
 add_library(photon_sandbox STATIC ${SANDBOX_SOURCES})
-target_include_directories(photon_sandbox PUBLIC include)
+target_include_directories(photon_sandbox PUBLIC include
+  ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(photon_sandbox PUBLIC Threads::Threads)
 if(OpenSSL_FOUND)
     target_link_libraries(photon_sandbox PUBLIC OpenSSL::Crypto)
@@ -172,6 +177,16 @@ if(GTest_FOUND)
   )
   target_link_libraries(test_new_modules photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME NewModuleTests COMMAND test_new_modules)
+
+  # 多智能体编排层测试
+  add_executable(test_agent_orchestrator
+    tests/test_agent_orchestrator.cpp
+  )
+  target_include_directories(test_agent_orchestrator PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+  )
+  target_link_libraries(test_agent_orchestrator photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
+  add_test(NAME AgentOrchestratorTests COMMAND test_agent_orchestrator)
 
   # 延迟对比基准（无需 google/benchmark）
   add_executable(sandbox_benchmark_v2 tests/benchmark_pool_v2.cpp)
