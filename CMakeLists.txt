@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.14)
-project(photon_kernel_sil3_v414 VERSION 4.14.0 LANGUAGES CXX)
+project(PhotonBox VERSION 4.14.0 LANGUAGES CXX)
 
 # ============================================================
 # 第十六条 SBOM：强制锁定编译器版本

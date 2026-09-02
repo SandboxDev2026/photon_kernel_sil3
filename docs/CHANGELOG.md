@@ -68,6 +68,6 @@ All notable changes to this project are documented in this file.
 - 8 项 rlimit 资源限制。
 - gRPC Fast-Path 服务框架。
 
-[Unreleased]: https://github.com/SandboxDev2026/photon_kernel_sil3/compare/v4.14...HEAD
-[v4.14]: https://github.com/SandboxDev2026/photon_kernel_sil3/releases/tag/v4.14
-[v4.0]: https://github.com/SandboxDev2026/photon_kernel_sil3/releases/tag/v4.0
+[Unreleased]: https://github.com/SandboxDev2026/PhotonBox/compare/v4.14...HEAD
+[v4.14]: https://github.com/SandboxDev2026/PhotonBox/releases/tag/v4.14
+[v4.0]: https://github.com/SandboxDev2026/PhotonBox/releases/tag/v4.0

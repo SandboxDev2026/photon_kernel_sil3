@@ -6,7 +6,7 @@ AgentENV 是 Kimi K3 开源的基于 Firecracker microVM 的分布式 Agent 训�
 
 > Agent 沙箱生命周期中 **98% 时间在等模型推理结果**，这段时间沙箱可以暂停，几乎不占内存和 CPU。需要评分判断时，可以从已有沙箱的精确状态分叉出一个新的，原来那个继续跑。
 
-photon_kernel_sil3 StrongPool 借鉴 AgentENV 四大核心技术，实现 MicroVM 高密度超配和高效状态管理。
+PhotonBox StrongPool 借鉴 AgentENV 四大核心技术，实现 MicroVM 高密度超配和高效状态管理。
 
 ## 四大核心特性
 

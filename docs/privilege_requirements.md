@@ -509,7 +509,7 @@ ls -la /proc/self/ns/
 # /etc/systemd/system/photon-sandbox.service
 [Unit]
 Description=Photon Kernel Sandbox Manager
-Documentation=https://github.com/SandboxDev2026/photon_kernel_sil3
+Documentation=https://github.com/SandboxDev2026/PhotonBox
 After=network.target cgroupfs-mount.service
 Wants=network.target
 
@@ -627,4 +627,4 @@ ls -la /etc/photon/hmac.key
 
 ---
 
-*最后更新：2026-09-02 | 基于 photon_kernel_sil3 v414*
+*最后更新：2026-09-02 | 基于 PhotonBox v414*

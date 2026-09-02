@@ -80,7 +80,7 @@ seccomp 无法过滤 prctl 的子操作号（option 参数），所以一旦允�
 
 ## 五、与参考实现对比
 
-| 特性 | photon_kernel_sil3 | NsJail | bubblewrap |
+| 特性 | PhotonBox | NsJail | bubblewrap |
 |---|---|---|---|
 | 默认动作 | KILL_PROCESS | KILL_PROCESS | EPERM (可配置) |
 | 多策略 | LOW/MEDIUM/HIGH + code_runner | 多 profile | 单策略 |

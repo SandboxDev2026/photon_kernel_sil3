@@ -13,7 +13,7 @@
     ],
     "component": {
       "type": "application",
-      "name": "photon_kernel_sil3",
+      "name": "PhotonBox",
       "version": "4.14.0",
       "description": "C++17 安全隔离沙盒：fork+seccomp+namespace+eBPF+MicroVM",
       "licenses": [

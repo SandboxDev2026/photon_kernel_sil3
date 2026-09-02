@@ -45,13 +45,13 @@ python3 server/python/sandbox_grpc_client.py --port 50051
 ## 贡献流程
 
 ### 1. 找到要做的事
-- 查看 [Issues](https://github.com/SandboxDev2026/photon_kernel_sil3/issues) 中的 open issues
+- 查看 [Issues](https://github.com/SandboxDev2026/PhotonBox/issues) 中的 open issues
 - 查看 `docs/` 下的设计文档，了解架构
 - 运行 `./scripts/verify_all.sh`，找到 SKIP 的项，这些是需要特权环境验证的
 
 ### 2. Fork & 分支
 ```bash
-git fork https://github.com/SandboxDev2026/photon_kernel_sil3
+git fork https://github.com/SandboxDev2026/PhotonBox
 git checkout -b feature/your-feature-name
 ```
 
@@ -105,7 +105,7 @@ git checkout -b feature/your-feature-name
 ## 安全贡献
 
 ### 报告漏洞
-**请勿在公开 Issues 中报告安全漏洞。** 请通过 [GitHub Security Advisories](https://github.com/SandboxDev2026/photon_kernel_sil3/security/advisories) 私密报告。
+**请勿在公开 Issues 中报告安全漏洞。** 请通过 [GitHub Security Advisories](https://github.com/SandboxDev2026/PhotonBox/security/advisories) 私密报告。
 
 详见 [SECURITY.md](./SECURITY.md)。
 
@@ -138,7 +138,7 @@ git checkout -b feature/your-feature-name
 
 ## 获得帮助
 
-- Issues: https://github.com/SandboxDev2026/photon_kernel_sil3/issues
+- Issues: https://github.com/SandboxDev2026/PhotonBox/issues
 - 设计文档: `docs/`
 - 安全问题: 见 SECURITY.md
 

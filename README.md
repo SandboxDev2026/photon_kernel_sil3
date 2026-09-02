@@ -1,15 +1,27 @@
-# photon_kernel_sil3 — C++17 安全隔离沙盒
+# PhotonBox — 基于 KVM 硬件虚拟化的安全隔离沙盒
 
-轻量级、高性能、可审计的代码执行沙盒。基于 `fork + seccomp-bpf + namespace + eBPF`，支持双后端（进程沙盒 / Firecracker MicroVM），提供完整的网络三层防御和审计证据链。
+轻量级、高性能、可审计的代码执行沙盒。**核心隔离底座为 KVM 硬件虚拟化**：每个 StrongPool 实例拥有独立的 Guest 内核，CPU 硬件级隔离内存（Intel VT-x / AMD-V + EPT/NPT），从根本上杜绝进程沙盒的内核逃逸风险。同时提供 LightPool 进程沙盒作为低延迟补充，支持双后端自动切换。
 
-> **关于命名**：项目名中的 "SIL-3" 是内部安全等级标识，用于标记本项目在沙盒隔离、审计追溯、合规检查三个维度达到的工程化程度。**这不是 IEC 61508 功能安全完整性等级认证**，项目不提供功能安全意义上的量化失效概率指标。如需 IEC 61508 认证，需由第三方认证机构进行独立评估。
+## 架构核心：KVM 硬件虚拟化
+
+PhotonBox 的 StrongPool 后端基于 **KVM (Kernel-based Virtual Machine)** 构建，利用 CPU 硬件虚拟化扩展实现强隔离：
+
+| 隔离维度 | 技术实现 | 安全保证 |
+|---------|---------|---------|
+| **CPU 隔离** | Intel VT-x / AMD-V，VMX root/non-root 模式 | Guest 代码运行在非根模式，无法直接访问宿主机硬件 |
+| **内存隔离** | EPT (Extended Page Tables) / NPT (Nested Page Tables) | Guest 物理地址空间完全独立，硬件级地址翻译隔离 |
+| **内核隔离** | 独立 Guest Linux 内核 | 宿主机内核漏洞不影响 Guest，反之亦然 |
+| **设备隔离** | 极简 virtio 设备模型（仅 block/net/vsock） | 无 PCI 直通，攻击面极小 |
+| **I/O 隔离** | virtio-vsock 通信，无共享内存 | 宿主-Guest 通信经过设备模拟层 |
+
+> **与进程沙盒的本质区别**：LightPool (fork+seccomp) 共享宿主机内核，内核 0day 可逃逸；StrongPool (KVM) 运行独立 Guest 内核，即使 Guest 内核被攻破，仍需突破 KVM + 硬件虚拟化隔离才能到达宿主机。
 
 ## 隔离等级与适用场景
 
-| 后端 | 隔离强度 | 启动延迟 | 内存开销 | 适用场景 |
+| 后端 | 隔离底座 | 启动延迟 | 内存开销 | 适用场景 |
 |------|---------|---------|---------|---------|
-| **LightPool** (fork+seccomp) | 进程级（共享内核） | <2ms（预热池） | 百KB级 | 内网可信/半可信 Agent 代码 |
-| **StrongPool** (Firecracker MicroVM) | 内核级（独立内核） | <125ms | 5-15MB/实例 | 公网不可信用户代码 |
+| **StrongPool** (KVM MicroVM) | **KVM 硬件虚拟化 + 独立 Guest 内核** | <125ms | 5-15MB/实例 | 公网不可信用户代码、多租户、强隔离需求 |
+| **LightPool** (fork+seccomp) | 进程级（共享宿主内核） | <2ms（预热池） | 百KB级 | 内网可信/半可信 Agent 代码、低延迟高吞吐 |
 
 > **安全原则**：高风险任务绝不静默降级到进程沙盒。KVM 不可用时，HIGH/CRITICAL 风险任务直接拒绝执行。
 
@@ -32,7 +44,7 @@ cmake --build build -j$(nproc)
 ./build/test_agent_orchestrator   # 多智能体编排
 ./build/test_four_layer_arch      # 四层控制平面
 ./build/test_network_isolation    # 网络防御
-./build/test_strong_pool          # StrongPool 调度
+./build/test_strong_pool          # StrongPool (KVM) 调度
 python3 tests/test_operator.py    # K8s Operator
 ```
 
@@ -40,7 +52,23 @@ python3 tests/test_operator.py    # K8s Operator
 
 ```bash
 ./scripts/verify_all.sh                # 当前环境验证
-sudo ./scripts/verify_baremetal.sh     # 裸机特权环境端到端验证
+sudo ./scripts/verify_baremetal.sh     # 裸机特权环境（含 KVM）端到端验证
+```
+
+### KVM 环境检查
+
+```bash
+# 检查 CPU 硬件虚拟化支持
+grep -E 'vmx|svm' /proc/cpuinfo
+
+# 检查 KVM 设备
+ls -la /dev/kvm
+
+# 检查 KVM 内核模块
+lsmod | grep kvm
+
+# 检查嵌套虚拟化（云环境）
+cat /sys/module/kvm_intel/parameters/nested 2>/dev/null || echo "nested not available"
 ```
 
 ### gRPC 服务（Python 实现，已端到端实测）
@@ -63,7 +91,19 @@ sudo python3 server/gateway/isolation_gateway.py \
 
 ## 核心特性
 
-### 执行引擎
+### KVM 硬件虚拟化引擎 (StrongPool)
+- **独立 Guest 内核**：每个 MicroVM 运行完整的 Linux 内核，与宿主机内核完全隔离
+- **CPU 硬件隔离**：Intel VT-x / AMD-V，VMX non-root 模式执行 Guest 代码
+- **EPT/NPT 内存隔离**：硬件级二级地址翻译，Guest 无法访问宿主机物理内存
+- **极简设备模型**：仅 virtio-block / virtio-net / virtio-vsock，无 PCI 直通
+- **KVM 探测**：运行时检测 /dev/kvm + CPU vmx/svm + firecracker
+- **高风险拒绝**：KVM 不可用时 HIGH/CRITICAL 直接拒绝，绝不静默降级
+- **并发上限**：max_concurrent_vms + 排队 + TTL 强制终止
+- **产物导出**：vsock 通道 + SHA256 + Evidence 证据链
+- **工作区管理**：输入只读镜像注入 + 输出 diff 导出
+- **临时磁盘**：tmpfs-backed 块设备，VM 销毁即释放
+
+### 执行引擎 (LightPool)
 - **预 fork 预热池**：p99 < 2ms，seccomp-ready worker 复用
 - **任意代码执行**：Python/Node 解释器预置，stdin 传入执行
 - **8 项 rlimit**：CPU/内存/文件数/进程数/CORE/NOFILE/SIGPENDING/MSGQUEUE
@@ -90,7 +130,7 @@ sudo python3 server/gateway/isolation_gateway.py \
 - **磁盘水位守卫**：4 级水位监控（NORMAL/WARNING/CRITICAL/EMERGENCY），spool 队列溢出保护
 
 ### 可插拔运行时
-- **4 种运行时**：Container / gVisor / MicroVM / Wasm
+- **4 种运行时**：Container / gVisor / MicroVM(KVM) / Wasm
 - **RuntimeSelector**：评分矩阵 + 加权评分 + 硬约束
 - **RiskScorer**：15+ 危险模式静态扫描，0-100 分，自动推荐安全域
 - **RiskEnforcer**：6 种任务来源分类，不可信输入强制 StrongPool，业务层二次校验
@@ -110,18 +150,11 @@ sudo python3 server/gateway/isolation_gateway.py \
 - **Skill 技能库**：版本管理 + 进化 + 回滚 + 评分历史
 - **安全约束**：所有代码执行通过沙盒，禁止本地 exec/eval，适应度含安全惩罚
 
-### StrongPool (MicroVM)
-- **KVM 探测**：运行时检测 /dev/kvm + CPU vmx/svm + firecracker
-- **高风险拒绝**：KVM 不可用时 HIGH/CRITICAL 直接拒绝，绝不静默降级
-- **并发上限**：max_concurrent_vms + 排队 + TTL 强制终止
-- **产物导出**：vsock 通道 + SHA256 + Evidence 证据链
-- **工作区管理**：输入只读镜像注入 + 输出 diff 导出
-- **临时磁盘**：tmpfs-backed 块设备，VM 销毁即释放
-
 ## 模块验证状态矩阵
 
 | 模块 | 单元测试 | 端到端实测 | 环境要求 | 状态 |
 |------|---------|-----------|---------|------|
+| StrongPool (KVM MicroVM) | 通过 | 需 KVM | /dev/kvm + firecracker | 代码完整，待 KVM 验证 |
 | 基础沙盒 (fork+seccomp) | 通过 | 已实测 | 无 | 生产可用 |
 | 预热池 | - | 已实测 <2ms | 无 | 生产可用 |
 | namespace 隔离 | 通过 | 需 root | CAP_SYS_ADMIN | 代码完整，待特权验证 |
@@ -132,20 +165,69 @@ sudo python3 server/gateway/isolation_gateway.py \
 | gRPC (Python) | - | 8 项端到端 | grpcio | 生产可用 |
 | gRPC (C++) | 编译通过 | 需 libgrpc++-dev | gRPC C++ 库 | 代码完整，Python 已替代 |
 | K8s Operator | 通过 | 需 K8s 集群 | kind/minikube | 代码完整，待集群验证 |
-| Firecracker MicroVM | 通过 | 需 KVM | /dev/kvm + firecracker | 代码完整，待 KVM 验证 |
 | E2B 网关 | - | 已实测 | Python | 生产可用 |
 | Prometheus metrics | - | 已实测 | 无 | 生产可用 |
 | 隔离网关服务 | 通过 | 可运行 | Python | 生产可用 |
 | 审计 HMAC 链 | - | 已实测 | 无 | 生产可用 |
 | ReleaseGate 独立进程 | 通过 | 已实测 | 无 | 生产可用 |
-| 遗传算法+自进化 | 通过 (42项) | 需沙盒服务 | photon HTTP API | 代码完整，测试通过 |
+| 遗传算法+自进化 | 通过 (42项) | 需沙盒服务 | PhotonBox HTTP API | 代码完整，测试通过 |
+| Fuzz 测试 | - | 38 cases 通过 | clang/libFuzzer | 手动模式已通过 |
 
-> 完整验证步骤见 `docs/privileged_e2e_guide.md` 和 `scripts/verify_baremetal.sh`。
+> 完整 KVM 验证步骤见 `docs/privileged_e2e_guide.md` 和 `scripts/verify_baremetal.sh`。
+
+## KVM 硬件虚拟化深度解析
+
+### CPU 虚拟化：VMX root / non-root 模式
+
+```
+┌─────────────────────────────────────────────────┐
+│                   宿主机 (VMX root)               │
+│  ┌─────────────────────────────────────────────┐ │
+│  │            KVM 内核模块                       │ │
+│  │  - VMCS (Virtual Machine Control Structure) │ │
+│  │  - EPT 页表管理                              │ │
+│  │  - 中断注入                                  │ │
+│  └─────────────────────────────────────────────┘ │
+│         │ VM exit / VM entry                      │
+│  ┌──────▼──────────────────────────────────────┐ │
+│  │          Guest (VMX non-root)                │ │
+│  │  ┌────────────────────────────────────────┐ │ │
+│  │  │          Guest Linux 内核               │ │ │
+│  │  │  - 独立进程调度                          │ │ │
+│  │  │  - 独立内存管理                          │ │ │
+│  │  │  - 独立系统调用表                        │ │ │
+│  │  └────────────────────────────────────────┘ │ │
+│  │  ┌────────────────────────────────────────┐ │ │
+│  │  │          用户代码 (沙盒内)              │ │ │
+│  │  └────────────────────────────────────────┘ │ │
+│  └─────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+### 内存隔离：EPT (Extended Page Tables)
+
+传统进程沙盒依赖页表权限位（NX/只读）隔离内存，但共享同一物理地址空间。KVM 使用 EPT 实现**硬件级二级地址翻译**：
+
+1. **Guest 虚拟地址** → (Guest 页表) → **Guest 物理地址**
+2. **Guest 物理地址** → (EPT 页表，CPU 硬件遍历) → **宿主机物理地址**
+
+Guest 内核只能管理 Guest 物理地址空间，无法直接访问宿主机物理内存。即使 Guest 内核被攻破，EPT 隔离仍然有效。
+
+### 为什么 KVM 比进程沙盒安全
+
+| 攻击面 | 进程沙盒 (fork+seccomp) | KVM MicroVM |
+|--------|------------------------|-------------|
+| 内核漏洞 | 共享宿主内核，直接逃逸 | Guest 内核独立，需先破 Guest 再破 KVM |
+| 内存隔离 | 页表权限位（软件） | EPT/NPT（硬件） |
+| CPU 隔离 | 同一内核调度 | VMX non-root 模式 |
+| 系统调用 | seccomp 过滤（可绕过） | Guest 独立 syscall 表 |
+| 设备访问 | 共享 /dev | 极简 virtio 设备 |
+| 逃逸难度 | 内核 0day 即可 | 需 Guest 内核 0day + KVM 0day + 硬件漏洞 |
 
 ## 目录结构
 
 ```
-photon_kernel_sil3_v414/
+PhotonBox/
 ├── include/photon_kernel/sandbox/   # 头文件
 │   ├── sandbox.hpp                   # 核心沙盒
 │   ├── sandbox_pool_v2.hpp           # 预热池
@@ -159,7 +241,7 @@ photon_kernel_sil3_v414/
 │   ├── risk_enforcer.hpp             # 风险强制
 │   ├── network_isolation.hpp         # 内网隔离
 │   ├── isolation_gateway.hpp         # 隔离网关(C++库)
-│   ├── strong_pool.hpp               # StrongPool 调度
+│   ├── strong_pool.hpp               # StrongPool (KVM) 调度
 │   ├── artifact_export.hpp           # 产物导出/工作区
 │   ├── sandbox_backend.hpp           # 后端抽象
 │   ├── runtime_interface.hpp         # 4种运行时
@@ -173,20 +255,6 @@ photon_kernel_sil3_v414/
 ├── src/sandbox/                       # 实现
 ├── tests/                             # 测试
 ├── evolution/                         # 遗传算法+自进化Agent
-│   ├── individual.py                  # 个体抽象
-│   ├── population.py                  # 种群管理
-│   ├── evaluator.py                   # 评估器(含安全惩罚)
-│   ├── mutator.py                     # 变异算子(rewrite/patch/nl_feedback)
-│   ├── crossover.py                   # LLM语义交叉
-│   ├── selector.py                    # 锦标赛选择
-│   ├── ga_loop.py                     # GA主循环
-│   ├── island_ga.py                   # 岛屿GA
-│   ├── agent_evolver.py               # 自进化闭环
-│   ├── skill_library.py               # Skill技能库
-│   ├── archive.py                     # 档案库
-│   ├── llm_adapter.py                 # LLM模型适配器
-│   ├── sandbox_client.py              # 沙盒HTTP客户端
-│   └── prompts.py                     # 提示词模板
 ├── agent/                             # 多智能体编排
 ├── server/
 │   ├── python/                        # Python gRPC 服务端(已实测)
@@ -194,9 +262,12 @@ photon_kernel_sil3_v414/
 │   └── e2b_gateway.cpp                # E2B 兼容网关
 ├── ebpf/                              # eBPF 程序(内置内网黑名单)
 ├── operator/                          # K8s Operator (kopf)
-├── deploy/                            # K8s 部署 (NetworkPolicy/CRD)
+├── deploy/                            # K8s 部署 + 监控配置
+│   └── monitoring/                    # Grafana dashboard + Prometheus alerts
 ├── scripts/                           # 构建/验证/CVE监控
 ├── docs/                              # 设计文档
+│   ├── security/                      # 安全审计报告
+│   └── operations/                    # 运维文档(应急响应runbook)
 ├── reports/                           # 安全报告/SBOM
 └── CMakeLists.txt
 ```
@@ -204,7 +275,8 @@ photon_kernel_sil3_v414/
 ## 安全声明
 
 ### 已知安全边界
-- **进程后端共享宿主内核**：LightPool 基于 namespace/seccomp/Landlock，共享宿主机 Linux 内核。内核漏洞可能导致沙盒逃逸。**公网不可信代码必须使用 StrongPool (MicroVM)**，LightPool 仅限内网可信/半可信场景。
+- **LightPool 进程后端共享宿主内核**：基于 namespace/seccomp/Landlock，共享宿主机 Linux 内核。内核漏洞可能导致沙盒逃逸。**公网不可信代码必须使用 StrongPool (KVM MicroVM)**，LightPool 仅限内网可信/半可信场景。
+- **StrongPool KVM 后端仍有攻击面**：包含 Firecracker VMM、KVM 内核模块、virtio 设备驱动。存在漏洞可能性，需定期升级。但攻击面远小于进程沙盒。
 - **高级特性需特权环境**：CRIU/eBPF/K8s/Firecracker 需对应权限，无权限时自动降级并上报告警。高风险任务在 KVM 不可用时直接拒绝，不静默降级。
 - **单人维护项目**：无第三方安全审计，建议在生产环境前进行独立安全评估（SAST 扫描、渗透测试、漏洞评估）。
 
@@ -214,19 +286,25 @@ photon_kernel_sil3_v414/
 - SBOM：`reports/sbom.cyclonedx.json`（CycloneDX 1.5 格式）
 - 风险评估：`RISK_ASSESSMENT.md`（22 项风险，P0/P1/P2 等级追踪）
 - 生产检查清单：`PRODUCTION_CHECKLIST.md`（上线前自检）
+- seccomp 审计：`docs/security/seccomp_audit_report.md`
+- 应急响应：`docs/operations/incident_response_runbook.md`
 
 ## 文档索引
 
 | 文档 | 内容 |
 |------|------|
 | `docs/network_defense_in_depth.md` | 网络三层防御完整设计 |
-| `docs/strong_pool_microvm.md` | StrongPool 三大限制解决方案 |
+| `docs/strong_pool_microvm.md` | StrongPool (KVM) 三大限制解决方案 |
 | `docs/four_layer_architecture.md` | 四层控制平面架构 |
-| `docs/microvm_integration.md` | Firecracker 集成设计 |
+| `docs/microvm_integration.md` | Firecracker/KVM 集成设计 |
 | `docs/escape_security_audit.md` | 逃逸安全审计报告 |
-| `docs/privileged_e2e_guide.md` | 特权环境端到端验证指南 |
+| `docs/privileged_e2e_guide.md` | 特权环境（含 KVM）端到端验证指南 |
 | `docs/privilege_requirements.md` | 权限要求与特权环境说明 |
 | `docs/microvm_advanced_features.md` | MicroVM 高级特性 |
+| `docs/security/seccomp_audit_report.md` | seccomp 白名单人工审计报告 |
+| `docs/operations/incident_response_runbook.md` | 应急响应 Runbook |
+| `deploy/monitoring/grafana_dashboard.json` | Grafana 监控面板 |
+| `deploy/monitoring/prometheus_alerts.yml` | Prometheus 告警规则 |
 | `docs/CHANGELOG.md` | 版本变更历史 |
 | `SECURITY.md` | 安全策略与漏洞响应 |
 | `CONTRIBUTING.md` | 贡献指南 |

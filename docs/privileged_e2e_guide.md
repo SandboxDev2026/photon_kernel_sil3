@@ -164,8 +164,8 @@ sudo criu check --all  # 验证内核支持
 ## 4. 编译完整特权版本（开启全部高级模块）
 
 ```bash
-git clone https://github.com/SandboxDev2026/photon_kernel_sil3.git
-cd photon_kernel_sil3
+git clone https://github.com/SandboxDev2026/PhotonBox.git
+cd PhotonBox
 
 cmake -B build \
   -DCMAKE_BUILD_TYPE=Release \
@@ -462,4 +462,4 @@ CRD、NetworkPolicy 参考目录 `deploy/`。
 
 ---
 
-*最后更新：2026-09-02 | 基于 photon_kernel_sil3 v414 | 内核要求 ≥ 5.15，推荐 6.1/6.6 LTS*
+*最后更新：2026-09-02 | 基于 PhotonBox v414 | 内核要求 ≥ 5.15，推荐 6.1/6.6 LTS*

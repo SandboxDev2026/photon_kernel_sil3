@@ -288,4 +288,4 @@
 
 ---
 
-*最后更新：2026-09-02 | 基于 photon_kernel_sil3 v4.14-Final | 配套 PRODUCTION_CHECKLIST.md*
+*最后更新：2026-09-02 | 基于 PhotonBox v4.14-Final | 配套 PRODUCTION_CHECKLIST.md*
