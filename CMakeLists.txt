@@ -80,6 +80,10 @@ if(ENABLE_COVERAGE)
 endif()
 
 # 可选：gRPC 服务端/客户端
+option(PHOTON_ENABLE_EBPF "Build eBPF network filter (requires libbpf-dev + clang)" ON)
+option(PHOTON_ENABLE_STRONGPOOL_FIRECRACKER "Enable StrongPool Firecracker MicroVM backend" ON)
+option(PHOTON_ENABLE_CRIU "Enable CRIU process snapshot/restore (requires criu)" ON)
+option(PHOTON_ENABLE_LANDLOCK "Enable Landlock filesystem access control" ON)
 option(PHOTON_ENABLE_GRPC "Build gRPC server/client (requires gRPC + protobuf)" ON)
 
 # ============================================================
