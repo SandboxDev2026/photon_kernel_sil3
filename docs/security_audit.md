@@ -50,8 +50,8 @@
 | Landlock 路径白名单 | `landlock.cpp` | 已验证（kernel 6.6 applied=yes） |
 | cgroup v2 硬隔离 | `cgroup_manager.cpp` | 容器内 degraded，生产环境可用 |
 | 审计日志 HMAC 哈希链 | `audit_security.cpp` | 已验证 |
-| 子进程 fd 关闭 | 本轮新增 | 已验证（测试通过） |
-| 子进程 stdin 重定向 | 本轮新增 | 已验证 |
+| 子进程 fd 关闭 | 已实现 | 已验证（测试通过） |
+| 子进程 stdin 重定向 | 已实现 | 已验证 |
 
 ## 仍存在的限制（需生产环境验证）
 

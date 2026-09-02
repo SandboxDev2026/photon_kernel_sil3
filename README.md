@@ -2,6 +2,8 @@
 
 轻量级、高性能、可审计的代码执行沙盒。基于 `fork + seccomp-bpf + namespace + eBPF`，支持双后端（进程沙盒 / Firecracker MicroVM），提供完整的网络三层防御和审计证据链。
 
+> **关于命名**：项目名中的 "SIL-3" 是内部安全等级标识，用于标记本项目在沙盒隔离、审计追溯、合规检查三个维度达到的工程化程度。**这不是 IEC 61508 功能安全完整性等级认证**，项目不提供功能安全意义上的量化失效概率指标。如需 IEC 61508 认证，需由第三方认证机构进行独立评估。
+
 ## 隔离等级与适用场景
 
 | 后端 | 隔离强度 | 启动延迟 | 内存开销 | 适用场景 |
@@ -9,7 +11,7 @@
 | **LightPool** (fork+seccomp) | 进程级（共享内核） | <2ms（预热池） | 百KB级 | 内网可信/半可信 Agent 代码 |
 | **StrongPool** (Firecracker MicroVM) | 内核级（独立内核） | <125ms | 5-15MB/实例 | 公网不可信用户代码 |
 
-> **安全原则**：高风险任务绝不静默降级到进程沙盒。KVM 不可用时，HIGH/CRITICAL 风险任务直接拒绝。
+> **安全原则**：高风险任务绝不静默降级到进程沙盒。KVM 不可用时，HIGH/CRITICAL 风险任务直接拒绝执行。
 
 ## 快速开始
 
@@ -24,30 +26,32 @@ cmake --build build -j$(nproc)
 ### 运行测试
 
 ```bash
-./build/test_sandbox              # 基础沙盒 8 测试
-./build/test_enhanced             # 增强模块 77 测试 (+2 跳过 CRIU)
-./build/test_new_modules          # 新模块 23 测试
-./build/test_agent_orchestrator   # 多智能体 11 测试
-./build/test_four_layer_arch      # 四层架构 23 测试
-./build/test_network_isolation    # 网络防御 22 测试
-./build/test_strong_pool          # StrongPool 15 测试
-python3 tests/test_operator.py    # K8s Operator 14 测试
+./build/test_sandbox              # 基础沙盒
+./build/test_enhanced             # 增强模块（含 CRIU 跳过用例）
+./build/test_new_modules          # 新模块
+./build/test_agent_orchestrator   # 多智能体编排
+./build/test_four_layer_arch      # 四层控制平面
+./build/test_network_isolation    # 网络防御
+./build/test_strong_pool          # StrongPool 调度
+python3 tests/test_operator.py    # K8s Operator
 ```
 
 ### 一键全量验证
 
 ```bash
 ./scripts/verify_all.sh                # 当前环境验证
-sudo ./scripts/verify_baremetal.sh     # 裸机特权环境 10 模块端到端
+sudo ./scripts/verify_baremetal.sh     # 裸机特权环境端到端验证
 ```
 
-### gRPC 服务端（Python，已端到端实测）
+### gRPC 服务（Python 实现，已端到端实测）
 
 ```bash
 pip install grpcio grpcio-tools protobuf
 python3 server/python/sandbox_grpc_server.py --port 50051 &
 python3 server/python/sandbox_grpc_client.py --port 50051
 ```
+
+> C++ gRPC 服务端代码已完整实现，但需安装 `libgrpc++-dev` 后编译验证。当前环境使用 Python gRPC 作为生产替代方案。
 
 ### 隔离网关服务
 
@@ -67,10 +71,11 @@ sudo python3 server/gateway/isolation_gateway.py \
 
 ### 隔离与安全
 - **6 种 namespace**：mount+pivot_root+pid+net+uts+ipc+user（CLONE_NEWUSER+uid/gid 映射）
-- **seccomp-bpf**：系统调用白名单，PR_SET_NO_NEW_PRIVS
-- **Landlock**：文件路径白名单
+- **seccomp-bpf**：系统调用白名单，PR_SET_NO_NEW_PRIVS，非法调用直接 KILL_PROCESS
+- **Landlock**：文件路径白名单（内核 >=5.13）
 - **CapabilityToken**：票据式动态权限，HMAC-SHA256 签名防篡改，运行时可撤销
-- **ResourceProxy**：CredentialVault 密钥保险箱 + 空白通行证（无权限返回 sk-dummy）
+- **ResourceProxy**：CredentialVault 密钥保险箱 + 空白通行证（无权限返回虚拟数据）
+- **ReleaseGate**：独立低权限进程（setuid nobody + seccomp-bpf），产物释放前强制校验
 
 ### 网络三层防御
 - **网段隔离**：K8s NetworkPolicy，沙盒池独立子网
@@ -82,17 +87,28 @@ sudo python3 server/gateway/isolation_gateway.py \
 - **gRPC ClientStreaming**：批量异步上报，失败本地落盘重试
 - **法案合规引擎**：22 条合规规则检查
 - **Evidence+Release**：证据收集 + 独立发布闸门（5 项检查）
+- **磁盘水位守卫**：4 级水位监控（NORMAL/WARNING/CRITICAL/EMERGENCY），spool 队列溢出保护
 
 ### 可插拔运行时
 - **4 种运行时**：Container / gVisor / MicroVM / Wasm
 - **RuntimeSelector**：评分矩阵 + 加权评分 + 硬约束
 - **RiskScorer**：15+ 危险模式静态扫描，0-100 分，自动推荐安全域
+- **RiskEnforcer**：6 种任务来源分类，不可信输入强制 StrongPool，业务层二次校验
 
 ### 多智能体编排
 - **Supervisor 总控**：任务拆解/分配/汇总
 - **Actor 消息总线**：所有消息接入 HMAC 审计链
 - **Environment 代理层**：工具调用经过 CapabilityToken 校验
 - **TaskDAG**：任务依赖图调度
+
+### 遗传算法与自进化
+- **GA 主循环**：种群初始化→评估→锦标赛选择→变异交叉→精英保留→更新
+- **三种变异模式**：rewrite 完整重写 / patch 局部 diff / nl_feedback 失败驱动
+- **LLM 语义交叉**：不是字符串拼接，由大模型吸收两份代码优点
+- **岛屿 GA**：多子种群独立演化 + 定期迁移，防止局部最优
+- **自进化闭环**：执行层→反思层→生成层→评测层→版本快照
+- **Skill 技能库**：版本管理 + 进化 + 回滚 + 评分历史
+- **安全约束**：所有代码执行通过沙盒，禁止本地 exec/eval，适应度含安全惩罚
 
 ### StrongPool (MicroVM)
 - **KVM 探测**：运行时检测 /dev/kvm + CPU vmx/svm + firecracker
@@ -106,21 +122,23 @@ sudo python3 server/gateway/isolation_gateway.py \
 
 | 模块 | 单元测试 | 端到端实测 | 环境要求 | 状态 |
 |------|---------|-----------|---------|------|
-| 基础沙盒 (fork+seccomp) | 8 | 已实测 | 无 | 生产可用 |
+| 基础沙盒 (fork+seccomp) | 通过 | 已实测 | 无 | 生产可用 |
 | 预热池 | - | 已实测 <2ms | 无 | 生产可用 |
-| namespace 隔离 | 6 | 需 root | CAP_SYS_ADMIN | 代码完整，待特权验证 |
+| namespace 隔离 | 通过 | 需 root | CAP_SYS_ADMIN | 代码完整，待特权验证 |
 | cgroup v2 | - | 需可写 cgroup | cgroup v2 | 代码完整 |
 | Landlock | - | 已实测 (kernel 6.6) | 内核 >=5.13 | 生产可用 |
 | eBPF 网络管控 | 编译通过 | 需 CAP_BPF | libbpf + CAP_BPF | 代码完整，待特权验证 |
 | CRIU 快照 | 逻辑通过 | 需 criu+root | criu 二进制 | 代码完整，待特权验证 |
 | gRPC (Python) | - | 8 项端到端 | grpcio | 生产可用 |
 | gRPC (C++) | 编译通过 | 需 libgrpc++-dev | gRPC C++ 库 | 代码完整，Python 已替代 |
-| K8s Operator | 14 | 需 K8s 集群 | kind/minikube | 代码完整，待集群验证 |
-| Firecracker MicroVM | 15 | 需 KVM | /dev/kvm + firecracker | 代码完整，待 KVM 验证 |
+| K8s Operator | 通过 | 需 K8s 集群 | kind/minikube | 代码完整，待集群验证 |
+| Firecracker MicroVM | 通过 | 需 KVM | /dev/kvm + firecracker | 代码完整，待 KVM 验证 |
 | E2B 网关 | - | 已实测 | Python | 生产可用 |
 | Prometheus metrics | - | 已实测 | 无 | 生产可用 |
-| 隔离网关服务 | 7 | 可运行 | Python | 生产可用 |
+| 隔离网关服务 | 通过 | 可运行 | Python | 生产可用 |
 | 审计 HMAC 链 | - | 已实测 | 无 | 生产可用 |
+| ReleaseGate 独立进程 | 通过 | 已实测 | 无 | 生产可用 |
+| 遗传算法+自进化 | 通过 (42项) | 需沙盒服务 | photon HTTP API | 代码完整，测试通过 |
 
 > 完整验证步骤见 `docs/privileged_e2e_guide.md` 和 `scripts/verify_baremetal.sh`。
 
@@ -138,6 +156,7 @@ photon_kernel_sil3_v414/
 │   ├── capability_token.hpp          # 票据权限
 │   ├── resource_proxy.hpp            # 资源代理
 │   ├── risk_scorer.hpp               # 风险打分
+│   ├── risk_enforcer.hpp             # 风险强制
 │   ├── network_isolation.hpp         # 内网隔离
 │   ├── isolation_gateway.hpp         # 隔离网关(C++库)
 │   ├── strong_pool.hpp               # StrongPool 调度
@@ -148,9 +167,26 @@ photon_kernel_sil3_v414/
 │   ├── task_spec.hpp                 # 任务规范
 │   ├── policy_engine.hpp             # 策略引擎
 │   ├── evidence_release.hpp          # 证据/发布闸门
-│   └── audit_logger.hpp              # 审计日志
+│   ├── audit_logger.hpp              # 审计日志
+│   ├── audit_disk_guard.hpp          # 磁盘水位守卫
+│   └── risk_level.hpp                # 风险等级统一
 ├── src/sandbox/                       # 实现
-├── tests/                             # 测试 (179 通过 + 2 跳过)
+├── tests/                             # 测试
+├── evolution/                         # 遗传算法+自进化Agent
+│   ├── individual.py                  # 个体抽象
+│   ├── population.py                  # 种群管理
+│   ├── evaluator.py                   # 评估器(含安全惩罚)
+│   ├── mutator.py                     # 变异算子(rewrite/patch/nl_feedback)
+│   ├── crossover.py                   # LLM语义交叉
+│   ├── selector.py                    # 锦标赛选择
+│   ├── ga_loop.py                     # GA主循环
+│   ├── island_ga.py                   # 岛屿GA
+│   ├── agent_evolver.py               # 自进化闭环
+│   ├── skill_library.py               # Skill技能库
+│   ├── archive.py                     # 档案库
+│   ├── llm_adapter.py                 # LLM模型适配器
+│   ├── sandbox_client.py              # 沙盒HTTP客户端
+│   └── prompts.py                     # 提示词模板
 ├── agent/                             # 多智能体编排
 ├── server/
 │   ├── python/                        # Python gRPC 服务端(已实测)
@@ -168,14 +204,16 @@ photon_kernel_sil3_v414/
 ## 安全声明
 
 ### 已知安全边界
-- **进程后端共享宿主内核**：不适合直接跑公网完全不可信代码，公网高危代码必须使用 StrongPool (MicroVM)
-- **高级特性需特权环境**：CRIU/eBPF/K8s/Firecracker 需对应权限，无权限时自动降级
-- **单人维护项目**：无第三方安全审计，建议在生产环境前进行独立安全评估
+- **进程后端共享宿主内核**：LightPool 基于 namespace/seccomp/Landlock，共享宿主机 Linux 内核。内核漏洞可能导致沙盒逃逸。**公网不可信代码必须使用 StrongPool (MicroVM)**，LightPool 仅限内网可信/半可信场景。
+- **高级特性需特权环境**：CRIU/eBPF/K8s/Firecracker 需对应权限，无权限时自动降级并上报告警。高风险任务在 KVM 不可用时直接拒绝，不静默降级。
+- **单人维护项目**：无第三方安全审计，建议在生产环境前进行独立安全评估（SAST 扫描、渗透测试、漏洞评估）。
 
 ### 安全响应
 - 漏洞报告：见 `SECURITY.md`
-- CVE 监控：`python3 scripts/cve_monitor.py`（10 个已知相关 CVE，含影响分析）
-- SBOM：`reports/sbom.cyclonedx.json`（12 个组件，CycloneDX 1.5）
+- CVE 监控：`python3 scripts/cve_monitor.py`（持续监控内核及依赖相关 CVE）
+- SBOM：`reports/sbom.cyclonedx.json`（CycloneDX 1.5 格式）
+- 风险评估：`RISK_ASSESSMENT.md`（22 项风险，P0/P1/P2 等级追踪）
+- 生产检查清单：`PRODUCTION_CHECKLIST.md`（上线前自检）
 
 ## 文档索引
 
@@ -187,9 +225,9 @@ photon_kernel_sil3_v414/
 | `docs/microvm_integration.md` | Firecracker 集成设计 |
 | `docs/escape_security_audit.md` | 逃逸安全审计报告 |
 | `docs/privileged_e2e_guide.md` | 特权环境端到端验证指南 |
-| `docs/privilege_requirements.md` | 权限要求与特权环境说明（KVM/CAP_BPF/CRIU/LightPool） |
-| `docs/microvm_advanced_features.md` | AgentENV 四大高级特性（内存气球/暂停恢复/状态分叉/分层镜像） |
-| `docs/CHANGELOG_full.md` | 完整变更历史 |
+| `docs/privilege_requirements.md` | 权限要求与特权环境说明 |
+| `docs/microvm_advanced_features.md` | MicroVM 高级特性 |
+| `docs/CHANGELOG.md` | 版本变更历史 |
 | `SECURITY.md` | 安全策略与漏洞响应 |
 | `CONTRIBUTING.md` | 贡献指南 |
 
