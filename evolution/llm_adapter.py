@@ -9,6 +9,19 @@ import json
 import time
 from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
+
+
+def _validate_url(url: str, allowed_schemes=("http", "https")) -> str:
+    """校验URL scheme, 防止 file:// 等危险scheme和SSRF"""
+    if not url:
+        raise ValueError("URL cannot be empty")
+    parsed = urlparse(url)
+    if parsed.scheme not in allowed_schemes:
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}, allowed: {allowed_schemes}")
+    if parsed.hostname in ("169.254.169.254", "metadata.google.internal", "100.100.100.200"):
+        raise ValueError(f"Blocked access to cloud metadata service: {parsed.hostname}")
+    return url
 
 
 class LLMResponse:

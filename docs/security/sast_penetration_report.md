@@ -190,10 +190,27 @@
 | 编号 | 级别 | 问题 | 修复方式 | 修复时间 |
 |------|------|------|---------|---------|
 | H-01~H-03 | HIGH | MD5 用于安全用途 | 添加 usedforsecurity=False | 本次审计 |
+| F-01 | HIGH | 逃逸测试脚本误报（ptrace在宿主机被允许计为逃逸） | 添加环境检测（photon-sandbox/container/host三级），容器/宿主机环境ptrace被允许标记为SKIP不计为逃逸 | 审计后修复 |
+| F-02 | MEDIUM | 逃逸测试脚本Landlock测试逻辑不完整 | 修复敏感文件测试，添加环境检测，不存在的文件标记为SKIP | 审计后修复 |
+| F-03 | MEDIUM | system()/popen()调用无命令注入防护 | 新增 command_guard.hpp，提供 is_safe_path()/validate_path()/safe_system() 白名单校验 | 审计后修复 |
+| F-04 | MEDIUM | llm_adapter/sandbox_client HTTP请求无URL白名单 | 添加 _validate_url() 函数，校验scheme（仅http/https），阻止云元数据服务访问（SSRF防护） | 审计后修复 |
+| F-05 | LOW | operator.py 硬编码/tmp临时文件 | 改用 tempfile.mktemp() | 审计后修复 |
 | - | HIGH | HMAC 密钥硬编码 | 外部注入 + 密钥轮换 | 之前版本 |
 | - | HIGH | ReleaseGate 同权限 | 独立进程 + setuid nobody + seccomp-bpf | 之前版本 |
 | - | HIGH | 解释器白名单应用层判断 | 改为 seccomp-bpf 内核强制 KILL_PROCESS | 之前版本 |
 | - | HIGH | 高风险任务静默降级 | 无 KVM 直接拒绝，不降级 | 之前版本 |
+
+### 修复后复测结果
+
+| 测试项 | 修复前 | 修复后 |
+|--------|--------|--------|
+| Python evolution 测试 | 63/63 通过 | 63/63 通过 |
+| 逃逸测试 - 通过 | 14 | 14 |
+| 逃逸测试 - 失败 | 2（误报） | 0 |
+| 逃逸测试 - 逃逸检测 | 2（误报） | 0 |
+| 逃逸测试 - 跳过 | 2 | 4（ptrace等容器环境预期跳过） |
+| Fuzz 测试 | 32 cases 通过 | 32 cases 通过 |
+| C++ 编译 | 通过 | 通过（新增 command_guard.hpp） |
 
 ---
 

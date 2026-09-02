@@ -6,6 +6,7 @@ evolution.sandbox_client — 沙盒客户端
 """
 from __future__ import annotations
 import json
+from urllib.parse import urlparse
 import time
 import urllib.request
 import urllib.error
@@ -28,6 +29,18 @@ class SandboxResult:
     def __repr__(self) -> str:
         return (f"SandboxResult(success={self.success}, time={self.execution_time_ms}ms, "
                 f"risk={self.risk_score}, backend={self.backend})")
+
+
+def _validate_url(url: str, allowed_schemes=("http", "https")) -> str:
+    """校验URL scheme, 防止 file:// 等危险scheme和SSRF"""
+    if not url:
+        raise ValueError("URL cannot be empty")
+    parsed = urlparse(url)
+    if parsed.scheme not in allowed_schemes:
+        raise ValueError(f"Unsupported URL scheme: {parsed.scheme}, allowed: {allowed_schemes}")
+    if parsed.hostname in ("169.254.169.254", "metadata.google.internal", "100.100.100.200"):
+        raise ValueError(f"Blocked access to cloud metadata service: {parsed.hostname}")
+    return url
 
 
 class SandboxClient:
