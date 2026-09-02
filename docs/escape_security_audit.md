@@ -11,18 +11,27 @@
 
 本工程实现了基于 `fork + seccomp-bpf + namespace + rlimit + cgroup + Landlock` 的多层进程沙盒，并提供 MicroVM（Firecracker）强隔离后端。
 
-**核心结论**:
-- Process 后端：适合可信/半可信代码，存在内核漏洞逃逸风险
-- MicroVM 后端：适合公网不可信代码，独立内核，逃逸难度极高
+**核心安全边界（严禁违反）**:
+
+> **1. LightPool 以及任何仿强隔离模式，均共享宿主机内核。内核漏洞可造成逃逸，严禁承载公网高危代码。**
+>
+> LightPool (fork+seccomp+namespace+Landlock) 以及 gVisor、容器等"看起来像强隔离但实际共享宿主内核"的模式，内核 0day 可导致逃逸。**严禁承载公网高危代码、多租户不可信代码，仅限内网可信/半可信场景。**
+
+> **2. StrongPool 并非绝对安全。攻击面来自 Firecracker VMM、Guest 内核、KVM 模块，需要持续升级组件版本。**
+>
+> StrongPool (KVM MicroVM) 虽有独立 Guest 内核和硬件级内存隔离，但攻击面包括 Firecracker VMM、Guest 内核、KVM 模块、virtio 设备模拟。需持续跟踪 CVE 并升级。"最安全"不等于"绝对安全"。
+
+**其他结论**:
 - 所有安全机制均有降级路径，无权限时不崩溃
 - 审计日志 HMAC 哈希链防篡改，文件权限 0600
 - CapabilityToken 票据式动态权限，运行时可撤销
+- 高风险任务无 KVM 时直接拒绝，不静默降级
 
 **风险等级**:
-| 隔离后端 | 逃逸风险 | 适用场景 |
-|---------|---------|---------|
-| Process (fork+seccomp) | 中（依赖内核安全） | 内网可信 Agent、CI/CD |
-| MicroVM (Firecracker) | 低（独立内核+KVM） | 公网多租户、不可信代码 |
+| 隔离后端 | 逃逸风险 | 适用场景 | 严禁场景 |
+|---------|---------|---------|---------|
+| LightPool (fork+seccomp) | 中高（共享宿主内核，内核 0day 可逃逸） | 内网可信 Agent、CI/CD | 公网高危代码、多租户不可信代码 |
+| StrongPool (KVM MicroVM) | 低（独立 Guest 内核+KVM 硬件隔离） | 公网多租户、不可信代码 | 无（当前最安全后端，但仍需持续升级） |
 
 ---
 

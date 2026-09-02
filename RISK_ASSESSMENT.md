@@ -18,25 +18,34 @@
 
 ## 一、设计固有风险（架构本身无法彻底消除，只能约束使用场景）
 
-### 1.1 LightPool 进程沙盒内核逃逸风险 🔴 P0
+### 1.1 LightPool 及仿强隔离模式内核逃逸风险 🔴 P0
 
-- **风险**：LightPool 基于 namespace/seccomp/Landlock，共享宿主机 Linux 内核。一旦内核存在漏洞，沙盒内代码可逃逸到宿主机。
-- **影响**：破坏宿主机、横向访问其他沙盒实例、窃取数据。
+- **风险**：LightPool (fork+seccomp+namespace+Landlock) 以及任何仿强隔离模式（gVisor、容器等），均共享宿主机 Linux 内核。一旦宿主机内核存在 0day 漏洞，沙盒内代码可逃逸到宿主机。
+- **影响**：破坏宿主机、横向访问其他沙盒实例、窃取数据、内网横向移动。
+- **核心声明**：**严禁承载公网高危代码、多租户不可信代码，仅限内网可信/半可信 Agent 场景。**
 - **管控措施**：
-  - ✅ 公网不可信代码禁止使用 LightPool，必须调度 StrongPool(MicroVM)
+  - ✅ 公网不可信代码禁止使用 LightPool，必须调度 StrongPool(KVM MicroVM)
   - ✅ LightPool 仅限内网可信/半可信 Agent
   - ✅ 高风险任务(score>70)无 KVM 时直接拒绝，不静默降级
+  - ✅ RiskEnforcer 不可信输入强制 StrongPool
 - **状态**：⚠️ 代码已实现，待裸机验证
 
-### 1.2 StrongPool（Firecracker MicroVM）并非绝对安全 🟠 P1
+### 1.2 StrongPool（KVM MicroVM）并非绝对安全 🟠 P1
 
-- **风险**：攻击面包含 Firecracker 二进制、KVM 内核模块、virtio 设备驱动。存在漏洞可能性。
-- **影响**：客户机逃逸至宿主机。
+- **核心声明**：**StrongPool 并非绝对安全。攻击面来自 Firecracker VMM、Guest 内核、KVM 模块，需要持续升级组件版本。**
+- **风险**：StrongPool 虽提供独立 Guest 内核和硬件级内存隔离（EPT/NPT），但攻击面包括：
+  - Firecracker VMM 进程（设备模拟、virtio 实现）
+  - Guest Linux 内核（Guest 内部漏洞可影响 VM 内安全）
+  - KVM 内核模块（虚拟化漏洞可导致 Guest→Host 逃逸）
+  - virtio 设备驱动（block/net/vsock 模拟漏洞）
+- **影响**：客户机逃逸至宿主机，破坏隔离边界。
 - **管控措施**：
-  - 不要信任 VM 内部任何代码
-  - ✅ 三层网络防御（网段隔离+隔离网关+实例eBPF）
-  - 定期升级 Firecracker、内核
-- **状态**：⚠️ 设计已完成，待长期运行验证
+  - ✅ 不要信任 VM 内部任何代码
+  - ✅ 三层网络防御（网段隔离+隔离网关+实例 eBPF）
+  - ✅ 持续跟踪 CVE，定期升级 Firecracker、Guest 内核、宿主内核、KVM 模块
+  - ✅ CVE 监控脚本（`python3 scripts/cve_monitor.py`）
+  - ✅ SBOM 清单（`reports/sbom.cyclonedx.json`）
+- **状态**：⚠️ 设计已完成，待长期运行验证和持续 CVE 跟踪
 
 ### 1.3 MicroVM 高并发内存成本压力 🟡 P2
 

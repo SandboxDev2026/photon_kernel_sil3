@@ -87,11 +87,20 @@
 - ✅ PR_SET_NO_NEW_PRIVS（防 setuid 提权）
 - ✅ PR_SET_DUMPABLE=0（防 ptrace/dump）
 
-### 已知限制（不适合的场景）
-- ⚠️ **Process 后端共享宿主内核**：内核漏洞可能导致逃逸。公网多租户必须用 MicroVM 后端
-- ⚠️ **MicroVM 后端需要裸机 + KVM**：容器环境自动降级为 Process 后端
-- ⚠️ **eBPF 需要 CAP_BPF**：无权限时自动降级为 seccomp
-- ⚠️ **CRIU 需要 root**：无权限时快照功能跳过
+### 核心安全边界（严禁违反）
+
+> **1. LightPool 以及任何仿强隔离模式，均共享宿主机内核。内核漏洞可造成逃逸，严禁承载公网高危代码。**
+>
+> LightPool (fork+seccomp+namespace) 以及任何"看起来像强隔离但实际共享宿主内核"的模式（gVisor、容器等），都运行在同一宿主机内核上。内核 0day 可导致逃逸。**严禁承载公网高危代码、多租户不可信代码，仅限内网可信/半可信场景。**
+
+> **2. StrongPool 并非绝对安全。攻击面来自 Firecracker VMM、Guest 内核、KVM 模块，需要持续升级组件版本。**
+>
+> StrongPool (KVM MicroVM) 虽有独立 Guest 内核和硬件级内存隔离，但攻击面包括：Firecracker VMM 进程、Guest Linux 内核、KVM 内核模块、virtio 设备模拟。需持续跟踪 CVE 并升级。"最安全"不等于"绝对安全"。
+
+### 其他已知限制
+- ⚠️ **StrongPool 需要裸机 + KVM**：容器环境无 /dev/kvm，高风险任务直接拒绝（不静默降级）
+- ⚠️ **eBPF 需要 CAP_BPF**：无权限时自动降级为 seccomp 兜底
+- ⚠️ **CRIU 需要 root + criu 二进制**：无权限时快照功能禁用
 - ⚠️ **gRPC C++ 服务端需要 libgrpc++-dev**：无库时可用 Python gRPC 服务端替代
 
 ### 不承诺的安全属性

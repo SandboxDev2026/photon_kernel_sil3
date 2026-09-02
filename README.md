@@ -274,9 +274,15 @@ PhotonBox/
 
 ## 安全声明
 
-### 已知安全边界
-- **LightPool 进程后端共享宿主内核**：基于 namespace/seccomp/Landlock，共享宿主机 Linux 内核。内核漏洞可能导致沙盒逃逸。**公网不可信代码必须使用 StrongPool (KVM MicroVM)**，LightPool 仅限内网可信/半可信场景。
-- **StrongPool KVM 后端仍有攻击面**：包含 Firecracker VMM、KVM 内核模块、virtio 设备驱动。存在漏洞可能性，需定期升级。但攻击面远小于进程沙盒。
+### 已知安全边界（核心声明）
+
+> **1. LightPool 以及任何仿强隔离模式，均共享宿主机内核。内核漏洞可造成逃逸，严禁承载公网高危代码。**
+>
+> LightPool (fork+seccomp+namespace+Landlock) 以及任何"看起来像强隔离但实际共享宿主内核"的模式（如 gVisor、容器），都运行在同一宿主机内核上。一旦宿主机内核存在 0day 漏洞，沙盒内代码可逃逸到宿主机。**此类后端严禁承载公网高危代码、多租户不可信代码，仅限内网可信/半可信 Agent 场景。**
+
+> **2. StrongPool 并非绝对安全。攻击面来自 Firecracker VMM、Guest 内核、KVM 模块，需要持续升级组件版本。**
+>
+> StrongPool (KVM MicroVM) 虽然提供独立 Guest 内核和硬件级内存隔离，但仍存在攻击面：Firecracker VMM 进程、Guest Linux 内核、KVM 内核模块、virtio 设备模拟。这些组件均可能存在漏洞，需要持续跟踪 CVE 并升级版本。StrongPool 是当前最安全的开源沙盒后端之一，但"最安全"不等于"绝对安全"。
 - **高级特性需特权环境**：CRIU/eBPF/K8s/Firecracker 需对应权限，无权限时自动降级并上报告警。高风险任务在 KVM 不可用时直接拒绝，不静默降级。
 - **单人维护项目**：无第三方安全审计，建议在生产环境前进行独立安全评估（SAST 扫描、渗透测试、漏洞评估）。
 
