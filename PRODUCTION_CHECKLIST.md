@@ -1,5 +1,18 @@
 # 生产上线补齐任务清单 (PRODUCTION_CHECKLIST)
 
+> **[2026-09-02 更新] P0 代码层安全加固已完成**：
+> - ✅ TaskSpec 严格校验器（资源溢出/TTL为0/内网CIDR篡改/路径遍历/注入攻击拦截）
+> - ✅ Release-Gate 独立进程框架（Unix socket通信 + 降权运行 + seccomp限制）
+> - ✅ CapabilityToken 密钥外部注入 + 轮换（环境变量/文件/KMS，宽限期兼容）
+> - ✅ 解释器白名单 seccomp 内核强制（BPF map + execve拦截 + KILL_PROCESS）
+> - 测试：24个安全加固测试全部通过 | 全量 C++ 221通过
+>
+> **剩余 P0（需裸机/特权环境）**：StrongPool+eBPF裸机验证、seccomp逐行复核+fuzz运行、内网拦截对抗测试
+
+---
+
+# 生产上线补齐任务清单 (PRODUCTION_CHECKLIST)
+
 > **前提**：Apache-2.0 原型，不能直接对公网跑不可信代码。本清单全部为补齐项。
 >
 > **五大块**：特权模块验证 → 安全加固 → 可靠性与压测 → 运维可观测 → 业务适配
@@ -206,8 +219,8 @@
 | # | 任务 | 状态 |
 |---|------|------|
 | 1 | StrongPool + eBPF裸机完整验证，高风险任务禁止静默降级 | ⚠️ 代码已实现，待裸机 |
-| 2 | seccomp/cap/Landlock安全复核 + fuzz测试 | ⬜ |
-| 3 | TaskSpec严格校验；Release-Gate独立校验产物与证据 | ⬜ |
+| 2 | seccomp/cap/Landlock安全复核 + fuzz测试 | ⚠️ 解释器白名单已内核强制，fuzz待运行 |
+| 3 | TaskSpec严格校验；Release-Gate独立校验产物与证据 | ✅ 代码完成 |
 | 4 | 内网拦截对抗测试 | ⬜ |
 
 ### P1（大规模生产必备）
