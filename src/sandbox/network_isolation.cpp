@@ -2,6 +2,11 @@
 #include "photon_kernel/sandbox/network_isolation.hpp"
 #include <sstream>
 #include <arpa/inet.h>
+#include <sys/wait.h>
+#include <sys/stat.h>
+#include <cstdlib>
+#include <fstream>
+#include <unistd.h>
 namespace photon_kernel {
 namespace sandbox {
 std::string block_decision_name(NetworkBlockDecision d) {
@@ -255,5 +260,80 @@ std::string DnsHijackManager::generate_resolv_conf() const {
     oss << "options timeout:2 attempts:3\n";
     return oss.str();
 }
+
+// ==================== 实际执行：iptables 规则应用 ====================
+
+// 执行系统命令，返回退出码
+static int exec_command(const std::string& cmd) {
+    int ret = system(cmd.c_str());
+    return WIFEXITED(ret) ? WEXITSTATUS(ret) : -1;
+}
+
+// 在 netns 内执行命令（如果指定了 netns_path）
+static std::string netns_prefix(const std::string& netns_path) {
+    if (netns_path.empty()) return "";
+    return "nsenter --net=" + netns_path + " ";
+}
+
+int InternalNetworkPolicy::apply_iptables_rules(const std::string& netns_path) const {
+    if (!enabled_) return 0;
+    std::string prefix = netns_prefix(netns_path);
+    auto rules = generate_iptables_rules();
+    int success = 0;
+    for (const auto& rule : rules) {
+        if (rule.empty() || rule[0] == '#') continue;  // 跳过注释和空行
+        std::string cmd = prefix + rule;
+        if (exec_command(cmd) == 0) {
+            success++;
+        }
+    }
+    return success;
+}
+
+int InternalNetworkPolicy::remove_iptables_rules(const std::string& netns_path) const {
+    std::string prefix = netns_prefix(netns_path);
+    // 简单实现：flush OUTPUT 链（生产环境应精确匹配删除）
+    std::string cmd = prefix + "iptables -F OUTPUT";
+    return exec_command(cmd) == 0 ? 1 : 0;
+}
+
+// ==================== 实际执行：DNS 劫持 ====================
+
+int DnsHijackManager::apply_dns_hijack(const std::string& netns_path) const {
+    if (!config_.enabled) return 0;
+    std::string prefix = netns_prefix(netns_path);
+    auto rules = generate_iptables_rules();
+    int success = 0;
+    for (const auto& rule : rules) {
+        if (rule.empty() || rule[0] == '#') continue;
+        std::string cmd = prefix + rule;
+        if (exec_command(cmd) == 0) {
+            success++;
+        }
+    }
+    return success;
+}
+
+int DnsHijackManager::remove_dns_hijack(const std::string& netns_path) const {
+    std::string prefix = netns_prefix(netns_path);
+    // 删除 nat 表的 DNS 劫持规则
+    std::string cmd1 = prefix + "iptables -t nat -F OUTPUT";
+    std::string cmd2 = prefix + "iptables -D OUTPUT -p udp --dport 53 -j DROP 2>/dev/null";
+    int s1 = exec_command(cmd1) == 0 ? 1 : 0;
+    exec_command(cmd2);  // 忽略结果（可能不存在）
+    return s1;
+}
+
+bool DnsHijackManager::write_resolv_conf(const std::string& path) const {
+    std::string content = generate_resolv_conf();
+    std::ofstream ofs(path);
+    if (!ofs.is_open()) return false;
+    ofs << content;
+    ofs.close();
+    // 设置只读，防止沙盒内修改
+    chmod(path.c_str(), 0444);
+    return true;
+}
+
 } // namespace sandbox
 } // namespace photon_kernel

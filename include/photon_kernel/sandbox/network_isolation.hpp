@@ -100,6 +100,13 @@ private:
     std::string uint_to_ip(uint32_t ip) const;
     // 检查是否匹配某条规则
     bool matches_cidr(uint32_t ip, const IpCidrRule& rule) const;
+
+    // 实际执行 iptables 规则（在 netns 内调用，需 root）
+    // 返回成功执行的规则数，失败返回 -1
+    int apply_iptables_rules(const std::string& netns_path = "") const;
+
+    // 移除已应用的 iptables 规则
+    int remove_iptables_rules(const std::string& netns_path = "") const;
 };
 // DNS 劫持与校验（防止沙盒自定义DNS绕过网关域名过滤）
 struct DnsHijackConfig {
@@ -120,6 +127,18 @@ public:
     std::vector<std::string> generate_iptables_rules() const;
     // 生成 resolv.conf 配置（强制DNS）
     std::string generate_resolv_conf() const;
+
+    // 实际执行 DNS 劫持（在 netns 内调用 iptables DNAT，需 root）
+    // 把所有 53 端口流量重定向到强制 DNS 服务器
+    // 返回成功执行的规则数，失败返回 -1
+    int apply_dns_hijack(const std::string& netns_path = "") const;
+
+    // 移除 DNS 劫持规则
+    int remove_dns_hijack(const std::string& netns_path = "") const;
+
+    // 写入 resolv.conf 到指定路径（沙盒内）
+    bool write_resolv_conf(const std::string& path) const;
+
     const DnsHijackConfig& config() const { return config_; }
 private:
     DnsHijackConfig config_;

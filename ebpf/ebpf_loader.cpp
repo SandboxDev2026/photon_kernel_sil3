@@ -36,6 +36,7 @@ static const char* MAP_WHITELIST = "egress_whitelist";
 static const char* MAP_CGROUPS = "sandbox_cgroups";
 static const char* MAP_AUDIT = "audit_events";
 static const char* MAP_STATS = "stats";
+static const char* MAP_DNS = "authorized_dns";
 struct whitelist_key {
     uint32_t network;
     uint32_t prefix_len;
@@ -52,6 +53,8 @@ struct audit_event {
     uint8_t type;
     char comm[16];
     char detail[64];
+    uint32_t target_ip;
+    uint16_t target_port;
 };
 static std::atomic<bool> g_running{true};
 // 解析白名单规则：CIDR:port_min-port_max:protocol
@@ -90,9 +93,21 @@ static int handle_audit_event(void* ctx, void* data, size_t size) {
         case 1: type_name = "execve"; break;
         case 2: type_name = "connect"; break;
         case 3: type_name = "open"; break;
+        case 4: type_name = "BLOCK_INTERNAL"; break;
+        case 5: type_name = "BLOCK_METADATA"; break;
+        case 6: type_name = "BLOCK_DNS"; break;
     }
-    fprintf(stdout, "[AUDIT] type=%s pid=%u uid=%u comm=%s detail=%s\n",
-            type_name, ev->pid, ev->uid, ev->comm, ev->detail);
+    if (ev->type >= 4) {
+        // 网络拦截事件，打印目标IP和端口
+        struct in_addr addr;
+        addr.s_addr = ev->target_ip;
+        fprintf(stdout, "[AUDIT] type=%s pid=%u uid=%u comm=%s target=%s:%u detail=%s\n",
+                type_name, ev->pid, ev->uid, ev->comm,
+                inet_ntoa(addr), ev->target_port, ev->detail);
+    } else {
+        fprintf(stdout, "[AUDIT] type=%s pid=%u uid=%u comm=%s detail=%s\n",
+                type_name, ev->pid, ev->uid, ev->comm, ev->detail);
+    }
     return 0;
 }
 static void print_usage(const char* prog) {
@@ -100,14 +115,18 @@ static void print_usage(const char* prog) {
     fprintf(stderr, "  --obj <file>       eBPF object file\n");
     fprintf(stderr, "  --iface <name>     network interface to attach XDP\n");
     fprintf(stderr, "  --whitelist <spec> CIDR:port-range:proto (repeatable)\n");
+    fprintf(stderr, "  --dns-server <ip>  authorized DNS server (repeatable, DNS劫持)\n");
     fprintf(stderr, "  --cgroup <path>    sandbox cgroup path to mark\n");
+    fprintf(stderr, "  --cgroup-fd <fd>   sandbox cgroup fd (for cgroup/connect4 attach)\n");
     fprintf(stderr, "  --duration <sec>   run duration (default: 0=forever)\n");
     fprintf(stderr, "  --stats            print stats every second\n");
 }
 int main(int argc, char** argv) {
     std::string obj_path, iface;
     std::vector<std::string> whitelists;
+    std::vector<std::string> dns_servers;
     std::vector<std::string> cgroups;
+    std::vector<int> cgroup_fds;
     int duration = 0;
     bool print_stats = false;
     for (int i = 1; i < argc; i++) {
@@ -115,7 +134,9 @@ int main(int argc, char** argv) {
         if (arg == "--obj" && i + 1 < argc) obj_path = argv[++i];
         else if (arg == "--iface" && i + 1 < argc) iface = argv[++i];
         else if (arg == "--whitelist" && i + 1 < argc) whitelists.push_back(argv[++i]);
+        else if (arg == "--dns-server" && i + 1 < argc) dns_servers.push_back(argv[++i]);
         else if (arg == "--cgroup" && i + 1 < argc) cgroups.push_back(argv[++i]);
+        else if (arg == "--cgroup-fd" && i + 1 < argc) cgroup_fds.push_back(std::stoi(argv[++i]));
         else if (arg == "--duration" && i + 1 < argc) duration = std::stoi(argv[++i]);
         else if (arg == "--stats") print_stats = true;
         else if (arg == "--help" || arg == "-h") { print_usage(argv[0]); return 0; }
@@ -148,7 +169,19 @@ int main(int argc, char** argv) {
             fprintf(stderr, "[WARN] invalid whitelist: %s\n", spec.c_str());
         }
     }
-    // 4. 标记沙盒 cgroup
+    // 4. 配置授权DNS服务器（DNS劫持用）
+    int dns_fd = bpf_object__find_map_fd_by_name(obj, MAP_DNS);
+    for (const auto& dns_ip : dns_servers) {
+        struct in_addr addr;
+        if (inet_pton(AF_INET, dns_ip.c_str(), &addr) == 1) {
+            uint32_t key = addr.s_addr;  // 大端
+            uint8_t val = 1;
+            bpf_map_update_elem(dns_fd, &key, &val, BPF_ANY);
+            fprintf(stdout, "[OK] authorized DNS: %s\n", dns_ip.c_str());
+        }
+    }
+
+    // 5. 标记沙盒 cgroup
     int cg_fd = bpf_object__find_map_fd_by_name(obj, MAP_CGROUPS);
     for (const auto& cg_path : cgroups) {
         // 读取 cgroup id（简化：用 inode 号）
@@ -172,7 +205,25 @@ int main(int argc, char** argv) {
             fprintf(stdout, "[OK] XDP attached to %s (ifindex=%u)\n", iface.c_str(), ifindex);
         }
     }
-    // 6. 附加 tracepoint（libbpf 自动附加）
+    // 6. 附加 cgroup/connect4（连接级内网拦截，主拦截点）
+    struct bpf_program* connect_prog = bpf_object__find_program_by_name(obj, "block_internal_connect");
+    if (connect_prog) {
+        int connect_fd = bpf_program__fd(connect_prog);
+        for (int cg_fd : cgroup_fds) {
+            int ret = bpf_program__attach_cgroup(connect_prog, cg_fd);
+            if (ret == 0) {
+                fprintf(stdout, "[OK] cgroup/connect4 attached to cgroup fd=%d\n", cg_fd);
+            } else {
+                fprintf(stderr, "[WARN] failed to attach cgroup/connect4 to fd=%d: %s\n",
+                        cg_fd, strerror(-ret));
+            }
+        }
+        if (cgroup_fds.empty()) {
+            fprintf(stdout, "[INFO] cgroup/connect4 program loaded (fd=%d), attach with --cgroup-fd\n", connect_fd);
+        }
+    }
+
+    // 7. 附加 tracepoint（libbpf 自动附加）
     bpf_object__attach_skeleton(nullptr);  // 简化，实际用 bpf_program__attach_tracepoint
     // 手动附加 tracepoint
     const char* tp_names[] = {"tracepoint/syscalls/sys_enter_execve",
