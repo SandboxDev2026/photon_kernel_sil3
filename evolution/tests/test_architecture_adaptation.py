@@ -11,6 +11,8 @@ import unittest
 import sys
 import os
 import time
+import json
+import random
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
@@ -23,7 +25,12 @@ from evolution.leader_teammate import (
     SharedWorkspace, TaskResult, LoopPhase
 )
 from evolution.island_ga import AdaptiveMutationController
+from evolution.real_data_adapter import (
+    RealDataAdapter, SecurityEvent, EventSource, AnomalyType,
+    SeccompViolationParser, KvmVmExitParser, AuditChainAnomalyDetector
+)
 from evolution.red_blue_adversary import (
+    RedBlueAdversaryTrainer as RBATrainer,
     RedAgent, BlueAgent, RedBlueAdversaryTrainer,
     AttackCase, DefenseRule, AdversaryRound,
     AttackType, DefenseType, AdversaryRole
@@ -689,7 +696,251 @@ class TestRedBlueAdversary(unittest.TestCase):
 
 
 
+class TestRealDataAdapter(unittest.TestCase):
+    """真实数据适配器测试（对接seccomp违规日志/KVM VM-Exit/HMAC审计链）"""
+
+    def setUp(self):
+        self.adapter = RealDataAdapter()
+        self.test_dir = "/tmp/photon_real_data_test"
+        os.makedirs(self.test_dir, exist_ok=True)
+
+    def tearDown(self):
+        import shutil
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def test_adapter_initialization(self):
+        """测试适配器初始化"""
+        self.assertIsNotNone(self.adapter.seccomp_parser)
+        self.assertIsNotNone(self.adapter.kvm_parser)
+        self.assertIsNotNone(self.adapter.audit_detector)
+        self.assertEqual(len(self.adapter.all_events), 0)
+
+    def test_generate_realistic_test_data(self):
+        """测试生成真实格式测试数据"""
+        generated = self.adapter.generate_realistic_test_data(self.test_dir, num_events=50)
+        self.assertIn("seccomp_log", generated)
+        self.assertIn("kvm_vm_exit", generated)
+        self.assertIn("audit_chain", generated)
+        self.assertTrue(os.path.exists(generated["seccomp_log"]))
+        self.assertTrue(os.path.exists(generated["kvm_vm_exit"]))
+        self.assertTrue(os.path.exists(generated["audit_chain"]))
+
+    def test_load_seccomp_log(self):
+        """测试加载seccomp违规日志"""
+        generated = self.adapter.generate_realistic_test_data(self.test_dir, num_events=30)
+        count = self.adapter.load_seccomp_log(generated["seccomp_log"])
+        self.assertGreater(count, 0)
+        self.assertEqual(len(self.adapter.seccomp_parser.parsed_events), count)
+
+    def test_seccomp_violation_parsing(self):
+        """测试seccomp违规事件解析"""
+        parser = SeccompViolationParser()
+        event_json = json.dumps({
+            "event_id": "test_001",
+            "event_type": "SECCOMP_VIOLATION",
+            "timestamp": 1234567890.0,
+            "sandbox_id": "sandbox_1",
+            "syscall": "ptrace",
+            "syscall_num": 101,
+            "arch": "x86_64",
+            "pid": 12345,
+            "action": "KILL",
+        })
+        event = parser.parse_line(event_json)
+        self.assertIsNotNone(event)
+        self.assertEqual(event.source, EventSource.SECCOMP_VIOLATION)
+        self.assertEqual(event.severity, "critical")  # ptrace是高危
+        self.assertEqual(event.payload["syscall"], "ptrace")
+
+    def test_seccomp_non_violation_ignored(self):
+        """测试非seccomp事件被忽略"""
+        parser = SeccompViolationParser()
+        event_json = json.dumps({
+            "event_id": "test_002",
+            "event_type": "NORMAL_EXECUTION",
+            "timestamp": 1234567890.0,
+        })
+        event = parser.parse_line(event_json)
+        self.assertIsNone(event)
+
+    def test_load_kvm_vm_exit(self):
+        """测试加载KVM VM-Exit事件"""
+        generated = self.adapter.generate_realistic_test_data(self.test_dir, num_events=30)
+        count = self.adapter.load_kvm_vm_exit_metrics(generated["kvm_vm_exit"])
+        self.assertGreater(count, 0)
+        self.assertEqual(len(self.adapter.kvm_parser.parsed_events), count)
+
+    def test_kvm_vm_exit_parsing(self):
+        """测试KVM VM-Exit事件解析"""
+        parser = KvmVmExitParser()
+        event = parser.parse_event({
+            "event_id": "vmexit_001",
+            "vm_id": "vm_1",
+            "exit_reason": "VMCALL",
+            "timestamp": 1234567890.0,
+            "vcpu_id": 0,
+            "guest_rip": "0xffff8000",
+        })
+        self.assertIsNotNone(event)
+        self.assertEqual(event.source, EventSource.KVM_VM_EXIT)
+        self.assertEqual(event.severity, "high")  # VMCALL是高风险
+        self.assertEqual(event.payload["exit_reason"], "VMCALL")
+
+    def test_kvm_high_risk_exit_reasons(self):
+        """测试KVM高风险VM-Exit原因识别"""
+        parser = KvmVmExitParser()
+        high_risk_reasons = ["VMCALL", "VMMCALL", "CPUID", "RDMSR", "WRMSR", "XSETBV"]
+        for reason in high_risk_reasons:
+            event = parser.parse_event({
+                "vm_id": "vm_1",
+                "exit_reason": reason,
+                "timestamp": time.time(),
+            })
+            self.assertEqual(event.severity, "high", f"{reason} should be high severity")
+
+    def test_load_audit_chain(self):
+        """测试加载HMAC审计链并检测异常"""
+        generated = self.adapter.generate_realistic_test_data(self.test_dir, num_events=50)
+        valid_count, anomaly_count = self.adapter.load_audit_chain(generated["audit_chain"])
+        self.assertGreater(valid_count, 0)
+        # 每20条插入一个异常，50条应该有2个异常
+        self.assertGreaterEqual(anomaly_count, 1)
+
+    def test_audit_chain_hash_break_detection(self):
+        """测试审计链哈希断裂检测"""
+        detector = AuditChainAnomalyDetector()
+        # 第一条记录（创世）
+        line1 = json.dumps({"seq": 0, "prev_hash": "0" * 64, "hmac": "abc", "timestamp": 1.0})
+        valid1, anomaly1 = detector.verify_and_detect(line1)
+        self.assertTrue(valid1)
+        self.assertIsNone(anomaly1)
+
+        # 第二条记录（prev_hash错误，模拟哈希断裂）
+        line2 = json.dumps({"seq": 1, "prev_hash": "wrong_hash", "hmac": "def", "timestamp": 2.0})
+        valid2, anomaly2 = detector.verify_and_detect(line2)
+        self.assertFalse(valid2)
+        self.assertIsNotNone(anomaly2)
+        self.assertEqual(anomaly2.anomaly_type, AnomalyType.HASH_CHAIN_BREAK)
+
+    def test_audit_chain_sequence_gap_detection(self):
+        """测试审计链序列号不连续检测"""
+        detector = AuditChainAnomalyDetector()
+        # seq=0
+        line1 = json.dumps({"seq": 0, "prev_hash": "a" * 64, "hmac": "abc", "timestamp": 1.0})
+        detector.verify_and_detect(line1)
+        # seq=5（跳过了1-4，应该检测到missing events）
+        line2 = json.dumps({"seq": 5, "prev_hash": "b" * 64, "hmac": "def", "timestamp": 2.0})
+        valid, anomaly = detector.verify_and_detect(line2)
+        self.assertIsNotNone(anomaly)
+        self.assertEqual(anomaly.anomaly_type, AnomalyType.MISSING_EVENTS)
+
+    def test_ingest_real_event(self):
+        """测试红蓝对抗框架摄入真实事件"""
+        trainer = RedBlueAdversaryTrainer()
+        event = SecurityEvent(
+            event_id="test_real_001",
+            source=EventSource.SECCOMP_VIOLATION,
+            timestamp=time.time(),
+            sandbox_id="sandbox_1",
+            severity="high",
+            description="测试seccomp违规",
+            payload={"syscall": "ptrace"},
+        )
+        result = trainer.ingest_real_event(event)
+        self.assertTrue(result["ingested"])
+        self.assertIn("新增攻击用例", result["actions"][0])
+        self.assertEqual(len(trainer.real_event_history), 1)
+
+    def test_ingest_real_events_batch(self):
+        """测试批量摄入真实事件"""
+        trainer = RedBlueAdversaryTrainer()
+        events = [
+            SecurityEvent(
+                event_id=f"batch_{i}",
+                source=EventSource.SECCOMP_VIOLATION,
+                timestamp=time.time(),
+                sandbox_id=f"sandbox_{i}",
+                severity="high" if i % 2 == 0 else "medium",
+                description=f"测试事件{i}",
+                payload={"syscall": "ptrace"},
+            )
+            for i in range(5)
+        ]
+        result = trainer.ingest_real_events(events)
+        self.assertEqual(result["total_ingested"], 5)
+        self.assertEqual(result["high_severity"], 3)
+        self.assertEqual(len(trainer.real_event_history), 5)
+
+    def test_anomaly_event_triggers_evolution(self):
+        """测试异常事件触发达尔文进化"""
+        trainer = RedBlueAdversaryTrainer()
+        event = SecurityEvent(
+            event_id="anomaly_001",
+            source=EventSource.SECCOMP_VIOLATION,
+            timestamp=time.time(),
+            sandbox_id="sandbox_1",
+            severity="critical",
+            description="异常seccomp违规",
+            payload={"syscall": "ptrace"},
+            anomaly_type=AnomalyType.FREQUENCY_SPIKE,
+            anomaly_score=0.8,
+        )
+        result = trainer.ingest_real_event(event)
+        self.assertTrue(result["triggered_evolution"])
+        # 应该有多个动作：新增攻击用例 + 进化防御规则 + 调整策略权重
+        self.assertGreaterEqual(len(result["actions"]), 2)
+
+    def test_get_statistics(self):
+        """测试适配器统计信息"""
+        generated = self.adapter.generate_realistic_test_data(self.test_dir, num_events=20)
+        self.adapter.load_seccomp_log(generated["seccomp_log"])
+        self.adapter.load_kvm_vm_exit_metrics(generated["kvm_vm_exit"])
+        stats = self.adapter.get_statistics()
+        self.assertIn("total_events", stats)
+        self.assertIn("seccomp_violations", stats)
+        self.assertIn("kvm_vm_exits", stats)
+        self.assertIn("top_seccomp_violations", stats)
+        self.assertGreater(stats["total_events"], 0)
+
+    def test_get_high_risk_events(self):
+        """测试获取高风险事件"""
+        parser = SeccompViolationParser()
+        # ptrace是critical
+        parser.parse_line(json.dumps({
+            "event_type": "SECCOMP_VIOLATION",
+            "syscall": "ptrace",
+            "sandbox_id": "s1",
+            "timestamp": time.time(),
+        }))
+        # socket是high
+        parser.parse_line(json.dumps({
+            "event_type": "SECCOMP_VIOLATION",
+            "syscall": "socket",
+            "sandbox_id": "s2",
+            "timestamp": time.time(),
+        }))
+        self.adapter.all_events.extend(parser.parsed_events)
+        high_risk = self.adapter.get_high_risk_events()
+        self.assertEqual(len(high_risk), 2)
+
+    def test_event_source_enum(self):
+        """测试事件来源枚举"""
+        self.assertEqual(len(EventSource), 6)
+        self.assertEqual(EventSource.SECCOMP_VIOLATION.value, "seccomp_violation")
+        self.assertEqual(EventSource.KVM_VM_EXIT.value, "kvm_vm_exit")
+        self.assertEqual(EventSource.AUDIT_CHAIN_ANOMALY.value, "audit_chain_anomaly")
+
+    def test_anomaly_type_enum(self):
+        """测试异常类型枚举"""
+        self.assertEqual(len(AnomalyType), 6)
+        self.assertEqual(AnomalyType.HASH_CHAIN_BREAK.value, "hash_chain_break")
+        self.assertEqual(AnomalyType.FREQUENCY_SPIKE.value, "frequency_spike")
+
+
+
+
 if __name__ == '__main__':
+
+
     unittest.main()
-
-

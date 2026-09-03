@@ -21,10 +21,14 @@ evolution.red_blue_adversary — 多智能体红蓝对抗框架
 """
 from __future__ import annotations
 import random
+import json
 import time
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass, field
 from enum import Enum
+
+from evolution.real_data_adapter import SecurityEvent, EventSource, AnomalyType, RealDataAdapter
+
 
 
 class AdversaryRole(Enum):
@@ -486,6 +490,7 @@ class RedBlueAdversaryTrainer:
         self.enable_evolution = enable_evolution
         self.rounds: List[AdversaryRound] = []
         self.institutional_tests: List[Dict[str, Any]] = []
+        self.real_event_history: List[Dict[str, Any]] = []
 
     def run_single_round(self, round_id: int) -> AdversaryRound:
         """
@@ -668,7 +673,160 @@ class RedBlueAdversaryTrainer:
             "red_agent_stats": self.red_agent.get_statistics(),
             "blue_agent_stats": self.blue_agent.get_statistics(),
             "institutional_tests_count": len(self.institutional_tests),
+            "real_events_ingested": len(self.real_event_history),
         }
+
+
+    def ingest_real_event(self, event: SecurityEvent) -> Dict[str, Any]:
+        """
+        摄入真实安全事件（高优先级：从模拟数据跃升为真实数据驱动）
+
+        将真实模块的产物（seccomp违规、VM-Exit事件、审计链异常）
+        转换为红蓝对抗框架的输入，驱动攻击方和防御方的自进化。
+
+        Args:
+            event: 标准化的安全事件（来自RealDataAdapter）
+
+        Returns:
+            摄入结果，包含事件处理状态和触发的进化动作
+        """
+        result = {
+            "event_id": event.event_id,
+            "source": event.source.value,
+            "severity": event.severity,
+            "ingested": True,
+            "triggered_evolution": False,
+            "actions": [],
+        }
+
+        # 1. 将真实事件转换为攻击用例（红方学习）
+        attack_case = self._convert_event_to_attack_case(event)
+        if attack_case:
+            self.red_agent.attack_cases.append(attack_case)
+            result["actions"].append(f"新增攻击用例: {attack_case.case_id}")
+
+        # 2. 根据事件严重程度触发防御进化
+        if event.severity in ["high", "critical"]:
+            # 高严重度事件触发防御规则进化
+            evolved_rule = self._evolve_defense_from_event(event)
+            if evolved_rule:
+                self.blue_agent.defense_rules.append(evolved_rule)
+                result["triggered_evolution"] = True
+                result["actions"].append(f"进化防御规则: {evolved_rule.rule_id}")
+
+        # 3. 异常事件触发红方策略调整
+        if event.anomaly_type is not None and event.anomaly_score > 0.5:
+            # 异常事件表明攻击可能成功，增加对应攻击类型权重
+            attack_type = self._map_source_to_attack_type(event.source)
+            if attack_type:
+                self.red_agent.strategy_weights[attack_type] *= 1.2
+                # 归一化
+                total = sum(self.red_agent.strategy_weights.values())
+                for k in self.red_agent.strategy_weights:
+                    self.red_agent.strategy_weights[k] /= total
+                result["triggered_evolution"] = True
+                result["actions"].append(f"调整攻击策略权重: {attack_type.value} +20%")
+
+        # 4. 记录真实事件摄入历史
+        self.real_event_history.append({
+            "event_id": event.event_id,
+            "source": event.source.value,
+            "severity": event.severity,
+            "anomaly_type": event.anomaly_type.value if event.anomaly_type else None,
+            "anomaly_score": event.anomaly_score,
+            "timestamp": event.timestamp,
+            "triggered_evolution": result["triggered_evolution"],
+        })
+
+        return result
+
+    def ingest_real_events(self, events: List[SecurityEvent]) -> Dict[str, Any]:
+        """
+        批量摄入真实安全事件
+
+        Args:
+            events: 安全事件列表
+
+        Returns:
+            批量摄入结果统计
+        """
+        results = []
+        for event in events:
+            result = self.ingest_real_event(event)
+            results.append(result)
+
+        return {
+            "total_ingested": len(results),
+            "triggered_evolution": sum(1 for r in results if r["triggered_evolution"]),
+            "high_severity": sum(1 for r in results if r["severity"] in ["high", "critical"]),
+            "anomaly_events": sum(1 for e in events if e.anomaly_type is not None),
+            "details": results,
+        }
+
+    def _convert_event_to_attack_case(self, event: SecurityEvent) -> Optional[AttackCase]:
+        """
+        将真实安全事件转换为攻击用例
+
+        从真实事件中提取攻击模式，生成新的攻击用例供红方学习。
+        """
+        attack_type = self._map_source_to_attack_type(event.source)
+        if attack_type is None:
+            return None
+
+        return AttackCase(
+            case_id=f"real_{event.event_id}",
+            attack_type=attack_type,
+            description=f"[真实事件] {event.description}",
+            payload=json.dumps(event.payload),
+            target_component=event.source.value,
+            difficulty=min(1.0, event.anomaly_score + 0.3),
+        )
+
+    def _evolve_defense_from_event(self, event: SecurityEvent) -> Optional[DefenseRule]:
+        """
+        基于真实事件进化防御规则
+
+        从高严重度事件中提取防御需求，生成新的防御规则。
+        """
+        defense_type = self._map_source_to_defense_type(event.source)
+        if defense_type is None:
+            return None
+
+        attack_type = self._map_source_to_attack_type(event.source)
+        target_types = [attack_type] if attack_type else []
+
+        return DefenseRule(
+            rule_id=f"evolved_{event.event_id}",
+            defense_type=defense_type,
+            description=f"[真实事件进化] 针对{event.description}的防御规则",
+            target_attack_types=target_types,
+            detection_logic=f"基于真实事件{event.event_id}的检测逻辑",
+            effectiveness=0.6,  # 新进化的规则初始有效性中等
+        )
+
+    def _map_source_to_attack_type(self, source: EventSource) -> Optional[AttackType]:
+        """将事件来源映射到攻击类型"""
+        mapping = {
+            EventSource.SECCOMP_VIOLATION: AttackType.SECCOMP_BYPASS,
+            EventSource.KVM_VM_EXIT: AttackType.PRIVILEGE_ESCALATION,
+            EventSource.AUDIT_CHAIN_ANOMALY: AttackType.AUDIT_BYPASS,
+            EventSource.NETWORK_BLOCK: AttackType.NETWORK_TUNNEL,
+            EventSource.RESOURCE_EXCEED: AttackType.DOS_ATTACK,
+            EventSource.CAPABILITY_DROP: AttackType.PRIVILEGE_ESCALATION,
+        }
+        return mapping.get(source)
+
+    def _map_source_to_defense_type(self, source: EventSource) -> Optional[DefenseType]:
+        """将事件来源映射到防御类型"""
+        mapping = {
+            EventSource.SECCOMP_VIOLATION: DefenseType.SYSTEM_CALL_MONITOR,
+            EventSource.KVM_VM_EXIT: DefenseType.PROCESS_ISOLATION,
+            EventSource.AUDIT_CHAIN_ANOMALY: DefenseType.AUDIT_LOGGING,
+            EventSource.NETWORK_BLOCK: DefenseType.NETWORK_FILTER,
+            EventSource.RESOURCE_EXCEED: DefenseType.RESOURCE_LIMIT,
+            EventSource.CAPABILITY_DROP: DefenseType.CAPABILITY_DROP,
+        }
+        return mapping.get(source)
 
     def export_report(self) -> Dict[str, Any]:
         """导出完整对抗报告"""
