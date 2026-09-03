@@ -25,6 +25,15 @@ from evolution.leader_teammate import (
     SharedWorkspace, TaskResult, LoopPhase
 )
 from evolution.island_ga import AdaptiveMutationController
+from evolution.log_consumer import (
+    FileTailConsumer, GrpcStreamConsumer, LogConsumerManager, ConsumerMode
+)
+from evolution.defense_enforcer import (
+    DefenseRuleEnforcer, ConfigUpdate, ConfigTarget, ChangeAction
+)
+from evolution.poc_event_library import (
+    PocEventLibrary, PocEvent, PocCategory, PocSeverity
+)
 from evolution.real_data_adapter import (
     RealDataAdapter, SecurityEvent, EventSource, AnomalyType,
     SeccompViolationParser, KvmVmExitParser, AuditChainAnomalyDetector
@@ -936,6 +945,290 @@ class TestRealDataAdapter(unittest.TestCase):
         self.assertEqual(len(AnomalyType), 6)
         self.assertEqual(AnomalyType.HASH_CHAIN_BREAK.value, "hash_chain_break")
         self.assertEqual(AnomalyType.FREQUENCY_SPIKE.value, "frequency_spike")
+
+
+
+
+class TestLogConsumer(unittest.TestCase):
+    """日志消费层测试（文件tail/gRPC流）"""
+
+    def setUp(self):
+        self.test_dir = "/tmp/photon_log_consumer_test"
+        os.makedirs(self.test_dir, exist_ok=True)
+        self.adapter = RealDataAdapter()
+
+    def tearDown(self):
+        import shutil
+        if os.path.exists(self.test_dir):
+            shutil.rmtree(self.test_dir)
+
+    def test_file_tail_consumer_creation(self):
+        """测试文件tail消费者创建"""
+        log_path = os.path.join(self.test_dir, "test.jsonl")
+        with open(log_path, 'w') as f:
+            f.write('{"event_type":"SECCOMP_VIOLATION","syscall":"ptrace"}\n')
+        consumer = FileTailConsumer(
+            file_path=log_path,
+            adapter=self.adapter,
+            source_type=EventSource.SECCOMP_VIOLATION,
+            from_beginning=True,
+        )
+        self.assertFalse(consumer.is_running())
+        self.assertEqual(consumer.get_stats().total_consumed, 0)
+
+    def test_file_tail_consumer_start_stop(self):
+        """测试文件tail消费者启动停止"""
+        log_path = os.path.join(self.test_dir, "test.jsonl")
+        with open(log_path, 'w') as f:
+            f.write('{"event_type":"SECCOMP_VIOLATION","syscall":"ptrace"}\n')
+        consumer = FileTailConsumer(
+            file_path=log_path,
+            adapter=self.adapter,
+            source_type=EventSource.SECCOMP_VIOLATION,
+            from_beginning=True,
+            poll_interval=0.05,
+        )
+        consumer.start()
+        time.sleep(0.3)
+        self.assertTrue(consumer.is_running())
+        consumer.stop(timeout=2.0)
+        self.assertFalse(consumer.is_running())
+
+    def test_consumer_mode_enum(self):
+        """测试消费模式枚举"""
+        self.assertEqual(len(ConsumerMode), 3)
+        self.assertEqual(ConsumerMode.FILE_TAIL.value, "file_tail")
+        self.assertEqual(ConsumerMode.GRPC_STREAM.value, "grpc_stream")
+
+    def test_grpc_consumer_creation(self):
+        """测试gRPC流消费者创建"""
+        consumer = GrpcStreamConsumer(
+            grpc_target="localhost:50051",
+            adapter=self.adapter,
+        )
+        self.assertIsNotNone(consumer)
+        self.assertFalse(consumer.is_running())
+
+    def test_consumer_manager(self):
+        """测试消费管理器"""
+        manager = LogConsumerManager(adapter=self.adapter)
+        log_path = os.path.join(self.test_dir, "test.jsonl")
+        with open(log_path, 'w') as f:
+            f.write('{"event_type":"SECCOMP_VIOLATION","syscall":"ptrace"}\n')
+        consumer = manager.add_file_tail(
+            name="test_seccomp",
+            file_path=log_path,
+            source_type=EventSource.SECCOMP_VIOLATION,
+            from_beginning=True,
+            poll_interval=0.05,
+        )
+        self.assertIn("test_seccomp", manager.consumers)
+        manager.start_all()
+        time.sleep(0.2)
+        manager.stop_all(timeout=2.0)
+        stats = manager.get_stats()
+        self.assertIn("_total", stats)
+
+
+class TestDefenseEnforcer(unittest.TestCase):
+    """防御规则下发层测试"""
+
+    def setUp(self):
+        self.enforcer = DefenseRuleEnforcer(
+            config_dir="/tmp/photon_enforcer_test",
+            dry_run=True,
+        )
+
+    def test_enforcer_creation(self):
+        """测试下发器创建"""
+        self.assertTrue(self.enforcer.dry_run)
+        self.assertEqual(len(self.enforcer.pending_updates), 0)
+
+    def test_config_target_enum(self):
+        """测试配置目标枚举"""
+        self.assertEqual(len(ConfigTarget), 5)
+        self.assertEqual(ConfigTarget.LIGHTPOOL_SECCOMP.value, "lightpool_seccomp")
+        self.assertEqual(ConfigTarget.STRONGPOOL_CONFIG.value, "strongpool_config")
+
+    def test_change_action_enum(self):
+        """测试变更动作枚举"""
+        self.assertEqual(len(ChangeAction), 5)
+
+    def test_generate_seccomp_updates(self):
+        """测试生成seccomp配置更新"""
+        rule = DefenseRule(
+            rule_id="test_rule",
+            defense_type=DefenseType.SYSTEM_CALL_MONITOR,
+            description="测试规则",
+            target_attack_types=[AttackType.SECCOMP_BYPASS],
+            detection_logic="test",
+        )
+        event = SecurityEvent(
+            event_id="test_event",
+            source=EventSource.SECCOMP_VIOLATION,
+            timestamp=time.time(),
+            sandbox_id="s1",
+            severity="high",
+            description="测试事件",
+            payload={"syscall": "ptrace"},
+        )
+        updates = self.enforcer.generate_updates_from_rule(rule, event)
+        self.assertGreater(len(updates), 0)
+        # 应该包含ptrace黑名单
+        ptrace_updates = [u for u in updates if "ptrace" in u.config_key]
+        self.assertGreater(len(ptrace_updates), 0)
+
+    def test_generate_network_updates(self):
+        """测试生成网络配置更新"""
+        rule = DefenseRule(
+            rule_id="net_rule",
+            defense_type=DefenseType.NETWORK_FILTER,
+            description="网络隔离",
+            target_attack_types=[AttackType.NETWORK_TUNNEL],
+            detection_logic="test",
+        )
+        updates = self.enforcer.generate_updates_from_rule(rule)
+        self.assertGreater(len(updates), 0)
+        # 应该包含内网CIDR黑名单
+        cidr_updates = [u for u in updates if "10.0.0.0/8" in u.config_key]
+        self.assertGreater(len(cidr_updates), 0)
+
+    def test_enqueue_and_apply_dry_run(self):
+        """测试入队和dry-run应用"""
+        update = ConfigUpdate(
+            update_id="test_update",
+            target=ConfigTarget.LIGHTPOOL_SECCOMP,
+            action=ChangeAction.ADD,
+            description="测试更新",
+            config_key="test.key",
+            config_value="test_value",
+            priority="high",
+        )
+        self.enforcer.enqueue_update(update)
+        self.assertEqual(len(self.enforcer.pending_updates), 1)
+        result = self.enforcer.apply_pending()
+        self.assertEqual(result["applied"], 1)
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(len(self.enforcer.pending_updates), 0)
+
+    def test_security_boundary(self):
+        """测试安全边界声明"""
+        report = self.enforcer.generate_update_report()
+        self.assertIn("security_boundary", report)
+        self.assertIn("warning", report["security_boundary"])
+        self.assertIn("production_requirements", report["security_boundary"])
+
+    def test_generate_update_report(self):
+        """测试生成配置更新报告"""
+        report = self.enforcer.generate_update_report()
+        self.assertIn("stats", report)
+        self.assertIn("dry_run", report)
+        self.assertIn("config_targets", report)
+
+
+class TestPocEventLibrary(unittest.TestCase):
+    """真实漏洞POC事件样本库测试"""
+
+    def setUp(self):
+        self.library = PocEventLibrary()
+
+    def test_library_creation(self):
+        """测试POC库创建"""
+        self.assertGreater(len(self.library.get_all_pocs()), 0)
+
+    def test_poc_category_enum(self):
+        """测试POC类别枚举"""
+        self.assertEqual(len(PocCategory), 8)
+
+    def test_poc_severity_enum(self):
+        """测试POC严重程度枚举"""
+        self.assertEqual(len(PocSeverity), 4)
+
+    def test_get_poc_by_id(self):
+        """测试按ID获取POC"""
+        poc = self.library.get_poc_by_id("NS-001")
+        self.assertIsNotNone(poc)
+        self.assertEqual(poc.poc_id, "NS-001")
+
+    def test_get_pocs_by_category(self):
+        """测试按类别获取POC"""
+        namespace_pocs = self.library.get_pocs_by_category(PocCategory.NAMESPACE_ESCAPE)
+        self.assertGreater(len(namespace_pocs), 0)
+        for poc in namespace_pocs:
+            self.assertEqual(poc.category, PocCategory.NAMESPACE_ESCAPE)
+
+    def test_get_critical_pocs(self):
+        """测试获取严重级别POC"""
+        critical = self.library.get_critical_pocs()
+        self.assertGreater(len(critical), 0)
+        for poc in critical:
+            self.assertEqual(poc.severity, PocSeverity.CRITICAL)
+
+    def test_poc_to_security_event(self):
+        """测试POC转换为SecurityEvent"""
+        poc = self.library.get_poc_by_id("KE-001")
+        event = poc.to_security_event()
+        self.assertIsInstance(event, SecurityEvent)
+        self.assertEqual(event.severity, "critical")
+        self.assertIsNotNone(event.anomaly_type)
+        self.assertGreater(event.anomaly_score, 0.5)
+
+    def test_generate_test_events(self):
+        """测试生成测试事件"""
+        events = self.library.generate_test_events()
+        self.assertEqual(len(events), len(self.library.get_all_pocs()))
+        for event in events:
+            self.assertIsInstance(event, SecurityEvent)
+
+    def test_generate_detection_rules(self):
+        """测试生成检测规则"""
+        rules = self.library.generate_detection_rules()
+        self.assertGreater(len(rules), 0)
+        for rule in rules:
+            self.assertIn("type", rule)
+            self.assertIn("poc_id", rule)
+
+    def test_generate_seccomp_blacklist(self):
+        """测试生成seccomp黑名单"""
+        blacklist = self.library.generate_seccomp_blacklist()
+        self.assertGreater(len(blacklist), 0)
+        self.assertIn("setns", blacklist)
+        self.assertIn("unshare", blacklist)
+        self.assertIn("fsconfig", blacklist)
+
+    def test_get_statistics(self):
+        """测试获取统计信息"""
+        stats = self.library.get_statistics()
+        self.assertIn("total_pocs", stats)
+        self.assertIn("by_category", stats)
+        self.assertIn("by_severity", stats)
+        self.assertIn("critical_count", stats)
+        self.assertGreater(stats["total_pocs"], 0)
+
+    def test_closed_loop_test(self):
+        """测试闭环测试（POC→适配器→红蓝对抗→防御下发）"""
+        from evolution.real_data_adapter import RealDataAdapter
+        from evolution.red_blue_adversary import RedBlueAdversaryTrainer
+
+        adapter = RealDataAdapter()
+        trainer = RedBlueAdversaryTrainer()
+        enforcer = DefenseRuleEnforcer(dry_run=True)
+
+        result = self.library.run_closed_loop_test(adapter, trainer, enforcer)
+        self.assertGreater(result["injected_events"], 0)
+        self.assertGreater(result["detected_anomalies"], 0)
+        self.assertGreater(result["triggered_evolution"], 0)
+        self.assertGreater(result["generated_defense_rules"], 0)
+        self.assertTrue(result["closed_loop_success"])
+
+    def test_cve_pocs_exist(self):
+        """测试CVE POC存在"""
+        cve_pocs = [p for p in self.library.get_all_pocs() if p.cve_id]
+        self.assertGreater(len(cve_pocs), 0)
+        # 应该包含CVE-2022-0185和CVE-2021-4034
+        cve_ids = [p.cve_id for p in cve_pocs]
+        self.assertIn("CVE-2022-0185", cve_ids)
+        self.assertIn("CVE-2021-4034", cve_ids)
 
 
 
