@@ -222,43 +222,81 @@ class LeaderAgent:
         任务拆解（Outer Loop: PLAN 阶段）
 
         将大任务拆解为子任务，每个子任务有明确的需求和权限要求。
+        根据 task_type 分发到对应的拆解子函数。
         """
         self.outer_loop_phase = LoopPhase.PLAN
-        subtasks = []
-
-        # 简化拆解策略：根据 task_type 拆解
         task_type = task.get("type", "generic")
 
         if task_type == "ga_evaluation":
-            # 遗传算法批量评测：拆解为多个评测子任务
-            population = task.get("population", [])
-            batch_size = task.get("batch_size", 10)
-            for i in range(0, len(population), batch_size):
-                batch = population[i:i+batch_size]
-                subtasks.append({
-                    "task_id": f"{task.get('task_id', 'ga')}_batch_{i//batch_size}",
-                    "type": "ga_batch_evaluation",
-                    "population_batch": batch,
-                    "requires_strong_pool": task.get("requires_strong_pool", True),
-                    "required_skills": ["code_evaluation", "sandbox_execution"],
-                    "timeout_s": task.get("timeout_s", 60),
-                })
+            subtasks = self._decompose_ga_evaluation(task)
         elif task_type == "code_audit":
-            # 代码审计：拆解为 SAST、渗透、漏洞评估子任务
-            subtasks.extend([
-                {"task_id": f"{task.get('task_id')}_sast", "type": "sast_scan",
-                 "required_skills": ["sast"], "requires_strong_pool": False},
-                {"task_id": f"{task.get('task_id')}_pentest", "type": "penetration_test",
-                 "required_skills": ["pentest"], "requires_strong_pool": True},
-                {"task_id": f"{task.get('task_id')}_vuln", "type": "vulnerability_assessment",
-                 "required_skills": ["vuln_assessment"], "requires_strong_pool": False},
-            ])
+            subtasks = self._decompose_code_audit(task)
         else:
-            # 通用任务：不拆解
-            subtasks.append(task)
+            subtasks = self._decompose_generic(task)
 
         self.workspace.add_log(self.agent_id, f"Task decomposed into {len(subtasks)} subtasks")
         return subtasks
+
+    def _decompose_ga_evaluation(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        拆解遗传算法批量评测任务
+
+        将种群按 batch_size 拆分为多个批次，每个批次作为一个子任务。
+        每个子任务需要 StrongPool 和 code_evaluation/sandbox_execution 技能。
+        """
+        subtasks = []
+        population = task.get("population", [])
+        batch_size = task.get("batch_size", 10)
+
+        for i in range(0, len(population), batch_size):
+            batch = population[i:i + batch_size]
+            subtasks.append({
+                "task_id": f"{task.get('task_id', 'ga')}_batch_{i // batch_size}",
+                "type": "ga_batch_evaluation",
+                "population_batch": batch,
+                "requires_strong_pool": task.get("requires_strong_pool", True),
+                "required_skills": ["code_evaluation", "sandbox_execution"],
+                "timeout_s": task.get("timeout_s", 60),
+            })
+
+        return subtasks
+
+    def _decompose_code_audit(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        拆解代码审计任务
+
+        拆分为三个子任务：SAST 扫描、渗透测试、漏洞评估。
+        渗透测试需要 StrongPool，SAST 和漏洞评估只需要 LightPool。
+        """
+        task_id = task.get("task_id", "audit")
+        return [
+            {
+                "task_id": f"{task_id}_sast",
+                "type": "sast_scan",
+                "required_skills": ["sast"],
+                "requires_strong_pool": False,
+            },
+            {
+                "task_id": f"{task_id}_pentest",
+                "type": "penetration_test",
+                "required_skills": ["pentest"],
+                "requires_strong_pool": True,
+            },
+            {
+                "task_id": f"{task_id}_vuln",
+                "type": "vulnerability_assessment",
+                "required_skills": ["vuln_assessment"],
+                "requires_strong_pool": False,
+            },
+        ]
+
+    def _decompose_generic(self, task: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        拆解通用任务
+
+        未知类型的任务不拆解，直接作为单个子任务返回。
+        """
+        return [task]
 
     def assign_task(self, subtask: Dict[str, Any]) -> Optional[str]:
         """
@@ -293,6 +331,7 @@ class LeaderAgent:
         执行 Inner Loop（单 Agent 执行循环）
 
         阶段：OBSERVE → REASON → ACT → VERIFY
+        拆分为多个子函数，每个子函数负责一个阶段或职责。
         """
         teammate = self.teammates.get(agent_id)
         if not teammate:
@@ -305,23 +344,62 @@ class LeaderAgent:
 
         start_time = time.time()
 
-        # OBSERVE: 观察环境
-        self.workspace.add_log(agent_id, f"[OBSERVE] Task: {subtask.get('task_id')}")
+        # OBSERVE + REASON: 观察环境并推理决策
+        self._inner_loop_observe_and_reason(agent_id, subtask)
 
-        # REASON: 推理决策（简化）
+        # ACT: 执行任务
+        success, output = self._inner_loop_act(agent_id, subtask)
+
+        # VERIFY: 验证结果并创建结果对象
+        result = self._inner_loop_verify_and_create_result(
+            agent_id, subtask, success, output, start_time
+        )
+
+        # 记录结果和进化反馈
+        self._inner_loop_record_result(teammate, subtask, result)
+
+        return result
+
+    def _inner_loop_observe_and_reason(self, agent_id: str, subtask: Dict[str, Any]) -> None:
+        """
+        Inner Loop OBSERVE + REASON 阶段
+
+        OBSERVE: 观察环境，收集任务信息
+        REASON: 推理决策，分析任务需求
+        这两个阶段目前都是日志记录，合并为一个子函数减少碎片化。
+        """
+        self.workspace.add_log(agent_id, f"[OBSERVE] Task: {subtask.get('task_id')}")
         self.workspace.add_log(agent_id, "[REASON] Analyzing task requirements")
 
-        # ACT: 执行行动（简化：模拟执行）
+    def _inner_loop_act(self, agent_id: str, subtask: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        Inner Loop ACT 阶段：执行任务
+
+        实际执行应该调用沙盒客户端，这里简化为模拟执行。
+        返回: (success, output)
+        """
         self.workspace.add_log(agent_id, "[ACT] Executing task")
-        # 实际执行应该调用沙盒客户端，这里简化
         success = subtask.get("expected_success", True)
         output = subtask.get("expected_output", "Task executed successfully")
+        return success, output
 
-        # VERIFY: 验证结果
+    def _inner_loop_verify_and_create_result(
+        self,
+        agent_id: str,
+        subtask: Dict[str, Any],
+        success: bool,
+        output: str,
+        start_time: float,
+    ) -> TaskResult:
+        """
+        Inner Loop VERIFY 阶段：验证结果并创建结果对象
+
+        计算执行时长，构建 TaskResult 对象，包含 Inner Loop 阶段信息。
+        """
         self.workspace.add_log(agent_id, "[VERIFY] Verifying result")
         duration_ms = int((time.time() - start_time) * 1000)
 
-        result = TaskResult(
+        return TaskResult(
             task_id=subtask.get("task_id", "unknown"),
             agent_id=agent_id,
             success=success,
@@ -330,15 +408,25 @@ class LeaderAgent:
             metrics={"inner_loop_phases": ["observe", "reason", "act", "verify"]},
         )
 
-        # 记录结果
+    def _inner_loop_record_result(
+        self,
+        teammate: TeammateAgent,
+        subtask: Dict[str, Any],
+        result: TaskResult,
+    ) -> None:
+        """
+        记录 Inner Loop 执行结果
+
+        1. 记录到 Teammate 的历史统计
+        2. 记录到 Leader 的全局结果字典
+        3. 如果失败，记录进化反馈用于 Skill 自演进
+        """
         teammate.record_result(result)
         self.results[result.task_id] = result
 
         # 如果失败，记录进化反馈
-        if not success:
+        if not result.success:
             self._record_evolution_feedback(subtask, result)
-
-        return result
 
     def execute_outer_loop(self, task: Dict[str, Any]) -> Dict[str, Any]:
         """
