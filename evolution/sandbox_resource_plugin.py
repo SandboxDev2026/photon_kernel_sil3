@@ -407,42 +407,62 @@ class SandboxResourcePlugin:
             return health_status
 
     def get_resource_report(self) -> Dict[str, Any]:
-        """获取资源上报报告（DRA 范式）"""
+        """
+        获取资源上报报告（DRA 范式）
+
+        报告包含：节点信息、能力探测结果、各资源详情、健康状态摘要。
+        拆分为报告头部构建和资源详情构建两个子函数。
+        """
         with self._lock:
-            report = {
-                "node_id": self.node_id,
-                "timestamp": time.time(),
-                "capability": self.capability.to_dict() if self.capability else None,
-                "resources": {},
-                "summary": {
-                    "total_resources": len(self.resources),
-                    "healthy_resources": 0,
-                    "degraded_resources": 0,
-                    "unavailable_resources": 0,
-                },
+            report = self._build_report_header()
+            self._build_resource_details(report)
+            return report
+
+    def _build_report_header(self) -> Dict[str, Any]:
+        """
+        构建资源报告头部
+
+        包含节点ID、时间戳、能力探测结果、空的资源和摘要字段。
+        """
+        return {
+            "node_id": self.node_id,
+            "timestamp": time.time(),
+            "capability": self.capability.to_dict() if self.capability else None,
+            "resources": {},
+            "summary": {
+                "total_resources": len(self.resources),
+                "healthy_resources": 0,
+                "degraded_resources": 0,
+                "unavailable_resources": 0,
+            },
+        }
+
+    def _build_resource_details(self, report: Dict[str, Any]) -> None:
+        """
+        构建资源详情和健康状态摘要
+
+        遍历所有已注册资源，更新可用容量，构建详情字典，
+        同时统计各健康状态的资源数量。
+        """
+        for resource_type, resource in self.resources.items():
+            resource.update_available()
+            report["resources"][resource_type.value] = {
+                "total": resource.total,
+                "used": resource.used,
+                "available": resource.available,
+                "reserved": resource.reserved,
+                "utilization_percent": round(resource.utilization_percent, 2),
+                "unit": resource.unit,
+                "health": resource.health.value,
+                "metadata": resource.metadata,
             }
 
-            for resource_type, resource in self.resources.items():
-                resource.update_available()
-                report["resources"][resource_type.value] = {
-                    "total": resource.total,
-                    "used": resource.used,
-                    "available": resource.available,
-                    "reserved": resource.reserved,
-                    "utilization_percent": round(resource.utilization_percent, 2),
-                    "unit": resource.unit,
-                    "health": resource.health.value,
-                    "metadata": resource.metadata,
-                }
-
-                if resource.health == ResourceHealth.HEALTHY:
-                    report["summary"]["healthy_resources"] += 1
-                elif resource.health == ResourceHealth.DEGRADED:
-                    report["summary"]["degraded_resources"] += 1
-                else:
-                    report["summary"]["unavailable_resources"] += 1
-
-            return report
+            if resource.health == ResourceHealth.HEALTHY:
+                report["summary"]["healthy_resources"] += 1
+            elif resource.health == ResourceHealth.DEGRADED:
+                report["summary"]["degraded_resources"] += 1
+            else:
+                report["summary"]["unavailable_resources"] += 1
 
     def register_callback(self, callback: Callable[[Dict[str, Any]], None]) -> None:
         """注册资源变更回调（插件事件通知）"""

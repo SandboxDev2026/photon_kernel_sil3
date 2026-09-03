@@ -159,6 +159,7 @@ class TopologyAwareScheduler:
         1. 优先全部放在同一 NUMA 节点（最低延迟）
         2. 如果单节点放不下，选择跨节点延迟最低的组合
         3. 记录每个实例的分配
+        拆分为单节点尝试和多节点贪心两个子函数。
         """
         placement: Dict[str, Optional[int]] = {}
 
@@ -168,35 +169,60 @@ class TopologyAwareScheduler:
                     placement[inst.instance_id] = None
                 return placement
 
-            # 尝试全部放在同一节点
-            for node_id, node in self.numa_nodes.items():
-                if self._node_can_fit_all(node, instances):
-                    for inst in instances:
-                        placement[inst.instance_id] = node_id
-                    return placement
+            # 策略1：尝试全部放在同一节点
+            single_node = self._try_single_node_placement(instances)
+            if single_node is not None:
+                for inst in instances:
+                    placement[inst.instance_id] = single_node
+                return placement
 
-            # 单节点放不下，按资源贪心分配
-            remaining = list(instances)
-            for node_id, node in sorted(
-                self.numa_nodes.items(),
-                key=lambda x: x[1].available_memory_mb,
-                reverse=True
-            ):
-                if not remaining:
-                    break
-                can_fit = []
-                for inst in remaining:
-                    if self._node_has_capacity(node, inst):
-                        can_fit.append(inst)
-                        placement[inst.instance_id] = node_id
-                for inst in can_fit:
-                    remaining.remove(inst)
-
-            # 剩余的分配 None（资源不足）
-            for inst in remaining:
-                placement[inst.instance_id] = None
-
+            # 策略2：单节点放不下，按资源贪心分配到多节点
+            placement = self._greedy_multi_node_placement(instances)
             return placement
+
+    def _try_single_node_placement(self, instances: List[SandboxInstance]) -> Optional[int]:
+        """
+        策略1：尝试将所有实例放在同一 NUMA 节点
+
+        遍历所有节点，找到第一个能放下所有实例的节点。
+        返回节点ID，找不到返回 None。
+        最低延迟策略：同节点内通信无跨 NUMA 开销。
+        """
+        for node_id, node in self.numa_nodes.items():
+            if self._node_can_fit_all(node, instances):
+                return node_id
+        return None
+
+    def _greedy_multi_node_placement(self, instances: List[SandboxInstance]) -> Dict[str, Optional[int]]:
+        """
+        策略2：单节点放不下时，按资源贪心分配到多节点
+
+        按可用内存降序遍历节点，每个节点尽量分配能放下的实例。
+        剩余无法分配的实例标记为 None（资源不足）。
+        """
+        placement: Dict[str, Optional[int]] = {}
+        remaining = list(instances)
+
+        for node_id, node in sorted(
+            self.numa_nodes.items(),
+            key=lambda x: x[1].available_memory_mb,
+            reverse=True
+        ):
+            if not remaining:
+                break
+            can_fit = []
+            for inst in remaining:
+                if self._node_has_capacity(node, inst):
+                    can_fit.append(inst)
+                    placement[inst.instance_id] = node_id
+            for inst in can_fit:
+                remaining.remove(inst)
+
+        # 剩余的分配 None（资源不足）
+        for inst in remaining:
+            placement[inst.instance_id] = None
+
+        return placement
 
     def _node_has_capacity(self, node: NUMATopology, instance: SandboxInstance) -> bool:
         """检查节点是否有足够容量"""
