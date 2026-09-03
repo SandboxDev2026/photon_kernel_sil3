@@ -357,35 +357,65 @@ class GangScheduler:
 
         当高优先级任务需要资源时，驱逐 BEST_EFFORT 级别的 Gang。
         借鉴 openFuyao 在离线混部调度。
+        拆分为可驱逐Gang查找和驱逐执行两个子函数。
         """
         if not self._eviction_enabled:
             return []
 
         with self._lock:
-            evicted = []
-            # 按 QoS 优先级排序，先驱逐 BEST_EFFORT
-            for gang_id in list(self.running_gangs):
-                gang = self.gangs.get(gang_id)
-                if not gang:
-                    continue
+            evictable = self._find_evictable_gangs()
+            return self._perform_eviction(evictable, needed_resources)
 
-                # 检查 Gang 中是否有低优先级实例
-                has_low_priority = any(
-                    inst.qos_class == QoSClass.BEST_EFFORT
-                    for inst in gang.instances
-                )
-                if has_low_priority:
-                    gang.status = GangStatus.FAILED
-                    for inst in gang.instances:
-                        inst.status = "evicted"
-                    evicted.append(gang_id)
-                    self.running_gangs.remove(gang_id)
+    def _find_evictable_gangs(self) -> List[str]:
+        """
+        查找可驱逐的低优先级 Gang
 
-                    # 检查是否已满足资源需求
-                    if self._check_resources_satisfied(needed_resources):
-                        break
+        遍历正在运行的 Gang，找出包含 BEST_EFFORT 级别实例的 Gang。
+        按 QoS 优先级排序，先驱逐 BEST_EFFORT。
+        返回可驱逐的 Gang ID 列表。
+        """
+        evictable = []
+        for gang_id in list(self.running_gangs):
+            gang = self.gangs.get(gang_id)
+            if not gang:
+                continue
+            # 检查 Gang 中是否有低优先级实例
+            has_low_priority = any(
+                inst.qos_class == QoSClass.BEST_EFFORT
+                for inst in gang.instances
+            )
+            if has_low_priority:
+                evictable.append(gang_id)
+        return evictable
 
-            return evicted
+    def _perform_eviction(
+        self,
+        evictable_gangs: List[str],
+        needed_resources: Dict[str, float],
+    ) -> List[str]:
+        """
+        执行驱逐操作
+
+        遍历可驱逐 Gang 列表，逐个标记为 FAILED 并从运行列表移除。
+        驱逐过程中检查是否已满足资源需求，满足则提前停止。
+        返回被驱逐的 Gang ID 列表。
+        """
+        evicted = []
+        for gang_id in evictable_gangs:
+            gang = self.gangs.get(gang_id)
+            if not gang:
+                continue
+            gang.status = GangStatus.FAILED
+            for inst in gang.instances:
+                inst.status = "evicted"
+            evicted.append(gang_id)
+            self.running_gangs.remove(gang_id)
+
+            # 检查是否已满足资源需求
+            if self._check_resources_satisfied(needed_resources):
+                break
+
+        return evicted
 
     def get_gang_status(self, gang_id: str) -> Optional[Dict[str, Any]]:
         """获取 Gang 状态"""

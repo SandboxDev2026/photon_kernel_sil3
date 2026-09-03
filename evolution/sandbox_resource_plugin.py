@@ -114,9 +114,26 @@ class CapabilityDetector:
         self.capability: Optional[NodeCapability] = None
 
     def detect_all(self) -> NodeCapability:
-        """探测所有能力"""
+        """
+        探测所有能力
+
+        按类别拆分为三个子函数：虚拟化能力、隔离能力、系统信息。
+        """
         cap = NodeCapability(node_id=self.node_id)
 
+        self._detect_virtualization_capabilities(cap)
+        self._detect_isolation_capabilities(cap)
+        self._detect_system_info(cap)
+
+        self.capability = cap
+        return cap
+
+    def _detect_virtualization_capabilities(self, cap: NodeCapability) -> None:
+        """
+        探测虚拟化相关能力
+
+        包括 KVM 硬件虚拟化、CAP_BPF eBPF 能力、CRIU 快照工具。
+        """
         # 探测 KVM
         cap.kvm_available, cap.kvm_device = self._detect_kvm()
 
@@ -126,6 +143,12 @@ class CapabilityDetector:
         # 探测 CRIU
         cap.criu_available, cap.criu_binary = self._detect_criu()
 
+    def _detect_isolation_capabilities(self, cap: NodeCapability) -> None:
+        """
+        探测隔离相关能力
+
+        包括 cgroup v2 资源限制、Landlock 文件访问控制、Namespace 进程隔离。
+        """
         # 探测 cgroup v2
         cap.cgroup_v2_available = self._detect_cgroup_v2()
 
@@ -135,15 +158,18 @@ class CapabilityDetector:
         # 探测 Namespace
         cap.namespace_available = self._detect_namespace()
 
+    def _detect_system_info(self, cap: NodeCapability) -> None:
+        """
+        探测系统信息
+
+        包括内核版本、CPU 核数、内存大小。
+        """
         # 探测内核版本
         cap.kernel_version = self._detect_kernel_version()
 
         # 探测 CPU 和内存
         cap.cpu_cores = os.cpu_count() or 0
         cap.memory_mb = self._detect_memory()
-
-        self.capability = cap
-        return cap
 
     def _detect_kvm(self) -> Tuple[bool, Optional[str]]:
         """探测 KVM 硬件虚拟化"""

@@ -27,6 +27,95 @@ echo "--- 环境能力检测 ---"
 echo "内核版本: $(uname -r)"
 echo "CPU: $(nproc) cores"
 echo "内存: $(free -h | grep Mem | awk '{print $2}')"
+
+# ==================== 嵌套虚拟化环境检测 ====================
+# 参考 kvm-unit-tests (GPL-2.0) 探测逻辑 + firecracker (Apache-2.0) 嵌套环境跳过安全测试逻辑
+# 目标：在虚拟机内部跑 StrongPool 做开发调试；不能做生产安全验收
+echo "--- 嵌套虚拟化环境检测 ---"
+
+# 1. 检测是否运行在虚拟机中（CPUID hypervisor 位 / /proc/cpuinfo）
+IS_VIRTUAL_MACHINE=FALSE
+if grep -qE 'vmx|svm' /proc/cpuinfo 2>/dev/null; then
+    # CPU有虚拟化标志，进一步检测hypervisor位
+    if command -v cpuid >/dev/null 2>&1; then
+        if cpuid -1 2>/dev/null | grep -q hypervisor; then
+            IS_VIRTUAL_MACHINE=TRUE
+        fi
+    fi
+fi
+# 备用检测：DMI信息
+if [ "$IS_VIRTUAL_MACHINE" = "FALSE" ]; then
+    for dmi_path in /sys/class/dmi/id/product_name /sys/class/dmi/id/sys_vendor; do
+        if [ -f "$dmi_path" ]; then
+            if grep -qiE 'vmware|virtualbox|kvm|qemu|xen|hyper-v|microsoft' "$dmi_path" 2>/dev/null; then
+                IS_VIRTUAL_MACHINE=TRUE
+                break
+            fi
+        fi
+    done
+fi
+
+# 2. 检测 KVM 设备是否可用
+KVM_AVAILABLE=FALSE
+KVM_DEVICE=""
+for kvm_path in /dev/kvm /dev/kvm_intel /dev/kvm_amd; do
+    if [ -e "$kvm_path" ] && [ -r "$kvm_path" ] && [ -w "$kvm_path" ]; then
+        KVM_AVAILABLE=TRUE
+        KVM_DEVICE="$kvm_path"
+        break
+    fi
+done
+
+# 3. 检测 KVM 嵌套虚拟化参数
+KVM_NESTED_ENABLED="unknown"
+for nested_path in /sys/module/kvm_intel/parameters/nested /sys/module/kvm_amd/parameters/nested; do
+    if [ -f "$nested_path" ]; then
+        KVM_NESTED_ENABLED=$(cat "$nested_path")
+        break
+    fi
+done
+
+# 4. 判定嵌套虚拟化状态
+RUNNING_IN_NESTED_VM=FALSE
+if [ "$IS_VIRTUAL_MACHINE" = "TRUE" ] && [ "$KVM_AVAILABLE" = "TRUE" ]; then
+    RUNNING_IN_NESTED_VM=TRUE
+fi
+
+# 5. 输出环境标记
+echo "运行在虚拟机: $IS_VIRTUAL_MACHINE"
+echo "KVM 可用: $KVM_AVAILABLE"
+if [ -n "$KVM_DEVICE" ]; then
+    echo "KVM 设备: $KVM_DEVICE"
+fi
+if [ "$KVM_NESTED_ENABLED" != "unknown" ]; then
+    echo "KVM 嵌套启用: $KVM_NESTED_ENABLED"
+fi
+echo "RUNNING_IN_NESTED_VM=$RUNNING_IN_NESTED_VM"
+export RUNNING_IN_NESTED_VM
+
+# 6. 嵌套环境警告（参考 firecracker 嵌套环境跳过安全测试逻辑）
+if [ "$RUNNING_IN_NESTED_VM" = "TRUE" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠️  警告：检测到嵌套虚拟化环境！${NC}"
+    echo -e "${YELLOW}  - 安全渗透/逃逸测试将标记为 SKIP_NESTED，不参与质量门禁${NC}"
+    echo -e "${YELLOW}  - 性能基准数据不纳入比对（嵌套有CPU退出开销，延迟失真）${NC}"
+    echo -e "${YELLOW}  - CRIU快照标记 NESTED_SNAPSHOT，不一定可在裸机恢复${NC}"
+    echo -e "${YELLOW}  - 本环境仅用于开发调试，禁止作为生产验收报告${NC}"
+    SKIP_NESTED_SECURITY_TESTS=TRUE
+    export SKIP_NESTED_SECURITY_TESTS
+else
+    SKIP_NESTED_SECURITY_TESTS=FALSE
+    export SKIP_NESTED_SECURITY_TESTS
+fi
+
+# 7. 无 KVM 时的警告
+if [ "$IS_VIRTUAL_MACHINE" = "TRUE" ] && [ "$KVM_AVAILABLE" = "FALSE" ]; then
+    echo ""
+    echo -e "${YELLOW}⚠️  警告：运行在虚拟机中但 KVM 不可用（未开启嵌套虚拟化）${NC}"
+    echo -e "${YELLOW}  StrongPool(Firecracker/KVM) 相关测试将全部 SKIP${NC}"
+fi
+
+echo ""
 echo ""
 # ==================== 1. 基础构建测试 ====================
 echo "--- 1. 基础构建与单元测试 ---"
