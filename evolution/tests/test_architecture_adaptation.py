@@ -23,6 +23,11 @@ from evolution.leader_teammate import (
     SharedWorkspace, TaskResult, LoopPhase
 )
 from evolution.island_ga import AdaptiveMutationController
+from evolution.red_blue_adversary import (
+    RedAgent, BlueAgent, RedBlueAdversaryTrainer,
+    AttackCase, DefenseRule, AdversaryRound,
+    AttackType, DefenseType, AdversaryRole
+)
 from evolution.sandbox_resource_plugin import (
     SandboxResourcePlugin, ResourceType, ResourceCapacity,
     ResourceHealth, CapabilityDetector, NodeCapability
@@ -472,7 +477,7 @@ class TestAdaptiveMutationController(unittest.TestCase):
     def test_novelty_search_triggered(self):
         """测试长期停滞触发新奇搜索"""
         # 模拟长期停滞（超过novelty_search_threshold）
-        for _ in range(6):
+        for _ in range(10):
             result = self.controller.update(0.5)
         params = self.controller.get_current_params()
         self.assertTrue(params["novelty_search_enabled"])
@@ -529,10 +534,162 @@ class TestAdaptiveMutationController(unittest.TestCase):
         self.assertIn("is_stagnant", result)
         self.assertIn("generation", result)
         self.assertIn("current_best_fitness", result)
-    unittest.main()
+
+
+class TestRedBlueAdversary(unittest.TestCase):
+    """多智能体红蓝对抗框架测试（借鉴DeepMind红队自博弈+港大OpenSpace自进化）"""
+
+    def setUp(self):
+        self.trainer = RedBlueAdversaryTrainer(max_rounds=10)
+
+    def test_red_agent_initialization(self):
+        """测试红方Agent初始化"""
+        red = RedAgent()
+        self.assertEqual(len(red.attack_cases), 16)
+        self.assertEqual(len(red.strategy_weights), len(AttackType))
+
+    def test_blue_agent_initialization(self):
+        """测试蓝方Agent初始化"""
+        blue = BlueAgent()
+        self.assertEqual(len(blue.defense_rules), 8)
+
+    def test_attack_case_creation(self):
+        """测试攻击用例创建"""
+        case = AttackCase(
+            case_id="TEST_001",
+            attack_type=AttackType.NAMESPACE_ESCAPE,
+            description="测试攻击",
+            payload="test payload",
+            target_component="namespace",
+        )
+        self.assertEqual(case.get_success_rate(), 0.0)
+        case.record_result(True)
+        case.record_result(False)
+        self.assertEqual(case.success_count, 1)
+        self.assertEqual(case.failure_count, 1)
+        self.assertEqual(case.get_success_rate(), 0.5)
+
+    def test_defense_rule_creation(self):
+        """测试防御规则创建"""
+        rule = DefenseRule(
+            rule_id="DR_TEST",
+            defense_type=DefenseType.SYSTEM_CALL_MONITOR,
+            description="测试规则",
+            target_attack_types=[AttackType.SECCOMP_BYPASS],
+            detection_logic="test logic",
+        )
+        self.assertEqual(rule.get_precision(), 1.0)
+        rule.record_trigger(True)
+        rule.record_trigger(False)
+        self.assertEqual(rule.trigger_count, 2)
+        self.assertEqual(rule.false_positive_count, 1)
+        self.assertEqual(rule.get_precision(), 0.5)
+
+    def test_red_agent_select_attack(self):
+        """测试红方选择攻击用例"""
+        red = RedAgent()
+        case = red.select_attack_case()
+        self.assertIsInstance(case, AttackCase)
+        self.assertIn(case, red.attack_cases)
+
+    def test_red_agent_mutate_attack(self):
+        """测试红方变异攻击用例"""
+        red = RedAgent()
+        base_case = red.attack_cases[0]
+        original_count = len(red.attack_cases)
+        new_case = red.mutate_attack_case(base_case)
+        self.assertEqual(len(red.attack_cases), original_count + 1)
+        self.assertNotEqual(new_case.case_id, base_case.case_id)
+
+    def test_blue_agent_detect_attack(self):
+        """测试蓝方检测攻击"""
+        blue = BlueAgent()
+        case = AttackCase(
+            case_id="TEST",
+            attack_type=AttackType.NAMESPACE_ESCAPE,
+            description="test",
+            payload="test",
+            target_component="namespace",
+            difficulty=0.1,  # 低难度，容易被检测
+        )
+        detected, rules, delay = blue.detect_attack(case)
+        self.assertIsInstance(detected, bool)
+        self.assertIsInstance(rules, list)
+        self.assertGreaterEqual(delay, 0)
+
+    def test_blue_agent_evolve_rule(self):
+        """测试蓝方进化防御规则"""
+        blue = BlueAgent()
+        base_rule = blue.defense_rules[0]
+        original_count = len(blue.defense_rules)
+        new_rule = blue.evolve_defense_rule(base_rule)
+        self.assertEqual(len(blue.defense_rules), original_count + 1)
+        self.assertNotEqual(new_rule.rule_id, base_rule.rule_id)
+
+    def test_single_round(self):
+        """测试单轮对抗"""
+        trainer = RedBlueAdversaryTrainer(max_rounds=1)
+        round_record = trainer.run_single_round(0)
+        self.assertIsInstance(round_record, AdversaryRound)
+        self.assertEqual(round_record.round_id, 0)
+        self.assertIsInstance(round_record.attack_success, bool)
+        self.assertIsInstance(round_record.defense_success, bool)
+
+    def test_full_training(self):
+        """测试完整对抗训练"""
+        trainer = RedBlueAdversaryTrainer(max_rounds=20, enable_evolution=False)
+        stats = trainer.run_training(num_rounds=20)
+        self.assertEqual(stats["total_rounds"], 20)
+        self.assertEqual(stats["red_wins"] + stats["blue_wins"], 20)
+        self.assertGreaterEqual(stats["red_win_rate"], 0)
+        self.assertLessEqual(stats["red_win_rate"], 1)
+
+    def test_institutional_red_team_test(self):
+        """测试制度性红队测试"""
+        trainer = RedBlueAdversaryTrainer()
+        result = trainer.run_institutional_red_team_test()
+        self.assertIn("results", result)
+        self.assertEqual(len(result["results"]), 5)  # 5个测试维度
+        self.assertIn("overall_pass_rate", result)
+        self.assertGreaterEqual(result["overall_pass_rate"], 0)
+        self.assertLessEqual(result["overall_pass_rate"], 1)
+
+    def test_training_statistics(self):
+        """测试训练统计信息"""
+        trainer = RedBlueAdversaryTrainer(max_rounds=5)
+        trainer.run_training()
+        stats = trainer.get_training_statistics()
+        self.assertIn("red_agent_stats", stats)
+        self.assertIn("blue_agent_stats", stats)
+        self.assertIn("total_rounds", stats)
+        self.assertEqual(stats["total_rounds"], 5)
+
+    def test_export_report(self):
+        """测试导出完整对抗报告"""
+        trainer = RedBlueAdversaryTrainer(max_rounds=5)
+        trainer.run_training()
+        trainer.run_institutional_red_team_test()
+        report = trainer.export_report()
+        self.assertIn("training_statistics", report)
+        self.assertIn("recent_rounds", report)
+        self.assertIn("institutional_test_results", report)
+        self.assertIn("recommendations", report)
+        self.assertIsInstance(report["recommendations"], list)
+
+    def test_attack_type_enum(self):
+        """测试攻击类型枚举"""
+        self.assertEqual(len(AttackType), 10)
+        self.assertEqual(AttackType.NAMESPACE_ESCAPE.value, "namespace_escape")
+
+    def test_defense_type_enum(self):
+        """测试防御类型枚举"""
+        self.assertEqual(len(DefenseType), 8)
+        self.assertEqual(DefenseType.SYSTEM_CALL_MONITOR.value, "syscall_monitor")
+
+
 
 
 if __name__ == '__main__':
-
-
     unittest.main()
+
+

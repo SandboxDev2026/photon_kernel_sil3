@@ -77,10 +77,26 @@ class IslandGA:
         执行迁移
 
         从每个岛屿选 Top-N 个体，交换到其他岛屿。
+        拆分为选择、分配、记录三个子函数。
         """
         if len(self.islands) < 2:
             return
 
+        # 选择移民
+        migrants_per_island = self._select_migrants()
+
+        # 分配移民
+        self._distribute_migrants(migrants_per_island)
+
+        # 记录迁移历史
+        self._record_migration()
+
+    def _select_migrants(self) -> List[List[Individual]]:
+        """
+        从每个岛屿选择 Top-N 精英移民
+
+        返回: 每个岛屿的移民列表
+        """
         migrants_per_island = []
         for island in self.islands:
             # 选 Top-N 精英
@@ -88,8 +104,17 @@ class IslandGA:
                                  key=lambda ind: ind.fitness, reverse=True)
             migrants = sorted_inds[:self.migration_count]
             migrants_per_island.append(migrants)
+        return migrants_per_island
 
-        # 根据策略分配
+    def _distribute_migrants(self, migrants_per_island: List[List[Individual]]) -> None:
+        """
+        根据迁移策略将移民分配到各岛屿
+
+        支持三种策略：
+        - ring: 环状迁移，接收前一个岛屿的移民
+        - random: 随机迁移，随机选择源岛屿
+        - elite: 精英迁移，共享全局最佳
+        """
         for i, island in enumerate(self.islands):
             if self.migration_strategy == "ring":
                 # 环状：接收前一个岛屿的移民
@@ -112,6 +137,8 @@ class IslandGA:
             # 裁剪种群大小
             island.population.trim()
 
+    def _record_migration(self) -> None:
+        """记录迁移历史"""
         self.migration_history.append({
             "generation": self.islands[0].population.generation if self.islands else 0,
             "strategy": self.migration_strategy,
@@ -199,6 +226,7 @@ class AdaptiveMutationController:
         """
         根据当前种群最佳适应度更新算子参数
 
+        拆分为停滞状态更新和新奇搜索检查两个子函数。
         Args:
             current_best_fitness: 当前种群最佳适应度
 
@@ -207,25 +235,14 @@ class AdaptiveMutationController:
         """
         self.best_fitness_history.append(current_best_fitness)
 
-        # 检测停滞
-        is_stagnant = self._detect_stagnation()
-        if is_stagnant:
-            self.stagnation_count += 1
-        else:
-            self.stagnation_count = 0
-            self.novelty_search_enabled = False
+        # 更新停滞状态
+        is_stagnant = self._update_stagnation_state()
 
         # 调整算子
         adjustment = self._adjust_operators(is_stagnant)
 
-        # 检测是否触发新奇搜索
-        if self.stagnation_count >= self.novelty_search_threshold:
-            self.novelty_search_enabled = True
-            adjustment["novelty_search_triggered"] = True
-            adjustment["action"] = "启用新奇搜索模式，大幅提高变异率"
-            self._trigger_novelty_search()
-        else:
-            adjustment["novelty_search_triggered"] = False
+        # 检查并触发新奇搜索
+        self._check_and_trigger_novelty_search(adjustment)
 
         # 记录调整历史
         adjustment["generation"] = len(self.best_fitness_history)
@@ -234,6 +251,35 @@ class AdaptiveMutationController:
         self.adjustment_history.append(adjustment)
 
         return adjustment
+
+    def _update_stagnation_state(self) -> bool:
+        """
+        更新停滞状态
+
+        检测种群是否停滞，并更新停滞计数器。
+        返回: 是否处于停滞状态
+        """
+        is_stagnant = self._detect_stagnation()
+        if is_stagnant:
+            self.stagnation_count += 1
+        else:
+            self.stagnation_count = 0
+            self.novelty_search_enabled = False
+        return is_stagnant
+
+    def _check_and_trigger_novelty_search(self, adjustment: Dict[str, Any]) -> None:
+        """
+        检查并触发新奇搜索模式
+
+        当停滞计数达到阈值时，触发新奇搜索，大幅提高变异率。
+        """
+        if self.stagnation_count >= self.novelty_search_threshold:
+            self.novelty_search_enabled = True
+            adjustment["novelty_search_triggered"] = True
+            adjustment["action"] = "启用新奇搜索模式，大幅提高变异率"
+            self._trigger_novelty_search()
+        else:
+            adjustment["novelty_search_triggered"] = False
 
     def _detect_stagnation(self) -> bool:
         """
