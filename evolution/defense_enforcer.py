@@ -354,62 +354,98 @@ class DefenseRuleEnforcer:
         Returns:
             应用结果统计
         """
+        # 1. 按优先级过滤和排序
+        filtered = self._filter_and_sort_updates(max_priority)
+
+        # 2. 逐个应用更新
+        applied, failed, results = self._apply_filtered_updates(filtered)
+
+        # 3. 清理已应用的更新
+        self._cleanup_applied_updates()
+
+        # 4. 返回统计结果
+        return {
+            "applied": applied,
+            "failed": failed,
+            "total": len(self.pending_updates),
+            "results": results,
+        }
+
+
+    def _filter_and_sort_updates(self, max_priority: Optional[str]) -> List:
+        """按优先级过滤和排序待处理更新"""
         priority_order = {"low": 0, "medium": 1, "high": 2, "critical": 3}
         min_level = priority_order.get(max_priority, 0) if max_priority else 0
 
-        applied = 0
-        failed = 0
-        results = []
-
-        # 按优先级排序
-        sorted_updates = sorted(
-            self.pending_updates,
+        filtered = [
+            u for u in self.pending_updates
+            if priority_order.get(u.priority, 0) >= min_level
+        ]
+        return sorted(
+            filtered,
             key=lambda u: priority_order.get(u.priority, 0),
             reverse=True,
         )
 
-        for update in sorted_updates:
-            if priority_order.get(update.priority, 0) < min_level:
-                continue
+    def _apply_filtered_updates(self, updates: List) -> Tuple[int, int, List]:
+        """逐个应用过滤后的更新，返回(成功数, 失败数, 结果列表)"""
+        applied = 0
+        failed = 0
+        results = []
 
+        for update in updates:
             try:
-                result = self._apply_update(update)
-                results.append(result)
-                if result["success"]:
+                if self.dry_run:
+                    update.status = "simulated"
                     applied += 1
-                    update.applied = True
-                    update.applied_at = time.time()
-                    self.applied_updates.append(update)
                 else:
-                    failed += 1
-                    self.failed_updates.append(update)
+                    self._apply_single_update(update)
+                    applied += 1
+                results.append({
+                    "update_id": update.update_id,
+                    "status": update.status,
+                    "target": update.target.value,
+                    "config_key": update.config_key,
+                })
             except Exception as e:
                 failed += 1
-                update.reason += f" | 应用失败: {str(e)}"
-                self.failed_updates.append(update)
-                results.append({"update_id": update.update_id, "success": False, "error": str(e)})
+                update.status = "failed"
+                update.error = str(e)
+                results.append({
+                    "update_id": update.update_id,
+                    "status": "failed",
+                    "error": str(e),
+                })
 
-            self._stats.last_update_time = time.time()
+        return applied, failed, results
 
-        # 清理已处理的更新
+    def _apply_single_update(self, update) -> None:
+        """应用单个配置更新（非dry-run模式）"""
+        config_path = self.config_paths.get(update.target)
+        if not config_path:
+            raise ValueError(f"未知配置目标: {update.target}")
+
+        import os, json
+        os.makedirs(os.path.dirname(config_path), exist_ok=True)
+
+        config = {}
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+
+        self._apply_to_config(config, update)
+
+        with open(config_path, 'w') as f:
+            json.dump(config, f, indent=2)
+
+        update.status = "applied"
+
+    def _cleanup_applied_updates(self) -> None:
+        """清理已应用或失败的更新（保留pending状态的）"""
         self.pending_updates = [
             u for u in self.pending_updates
-            if not u.applied and u not in self.failed_updates
+            if u.status == "pending"
         ]
-
-        # 更新统计
-        self._stats.total_updates += applied + failed
-        self._stats.applied_updates += applied
-        self._stats.failed_updates += failed
-        self._stats.pending_updates = len(self.pending_updates)
-
-        return {
-            "applied": applied,
-            "failed": failed,
-            "pending": len(self.pending_updates),
-            "results": results,
-            "dry_run": self.dry_run,
-        }
 
     def _apply_update(self, update: ConfigUpdate) -> Dict[str, Any]:
         """应用单个配置更新"""
