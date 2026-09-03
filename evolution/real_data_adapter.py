@@ -375,95 +375,150 @@ class AuditChainAnomalyDetector:
 
         返回: (是否有效, 异常事件(如果有))
         """
+        # 1. 行验证和JSON解析
+        valid, data = self._validate_log_line(line)
+        if not valid:
+            return False, None
+        if data is None:
+            return True, None
+
+        # 2. HMAC链完整性检查
+        hmac_anomaly = self._check_hmac_chain(data)
+        if hmac_anomaly:
+            return True, hmac_anomaly
+
+        # 3. 序列号连续性检查
+        seq_anomaly = self._check_sequence_continuity(data)
+        if seq_anomaly:
+            return True, seq_anomaly
+
+        # 4. 时间戳有效性检查
+        ts_anomaly = self._check_timestamp_validity(data)
+        if ts_anomaly:
+            return True, ts_anomaly
+
+        # 5. 其他异常检测
+        other_anomaly = self._detect_other_anomalies(data)
+        return True, other_anomaly
+
+
+    def _validate_log_line(self, line: str) -> Tuple[bool, Optional[Dict]]:
+        """验证日志行格式并解析JSON"""
         line = line.strip()
         if not line:
             return True, None
-
         try:
             data = json.loads(line)
+            return True, data
         except json.JSONDecodeError:
             return False, None
 
-        # 检查HMAC链字段
+    def _check_hmac_chain(self, data: Dict) -> Optional[SecurityEvent]:
+        """检查HMAC哈希链完整性"""
         seq = data.get("seq")
         prev_hash = data.get("prev_hash")
         hmac_val = data.get("hmac")
 
-        anomaly_type = None
-        anomaly_score = 0.0
-        description = ""
+        # 第一条记录没有prev_hash，跳过
+        if seq is not None and int(seq) > 0 and prev_hash is not None:
+            if self.last_hash is not None and prev_hash != self.last_hash:
+                return self._build_anomaly_event(
+                    data, AnomalyType.HASH_CHAIN_BREAK, "critical",
+                    f"哈希链断裂: 期望{self.last_hash[:16]}..., 实际{prev_hash[:16]}..."
+                )
 
-        # 1. 检测哈希链断裂（只有非第一条记录才检查）
-        if self.last_hash is not None and prev_hash is not None:
-            if prev_hash != self.last_hash:
-                anomaly_type = AnomalyType.HASH_CHAIN_BREAK
-                anomaly_score = 1.0
-                description = f"哈希链断裂: expected={self.last_hash[:16]}..., got={prev_hash[:16]}..."
+        # HMAC验证（如果有密钥）
+        if hmac_val and self.hmac_key:
+            expected = self._compute_hmac(data)
+            if expected != hmac_val:
+                return self._build_anomaly_event(
+                    data, AnomalyType.HASH_CHAIN_BREAK, "critical",
+                    "HMAC验证失败"
+                )
 
-        # 2. 检测HMAC验证失败（只有非第一条记录才检查）
-        if hmac_val is not None and prev_hash is not None and self.last_hash is not None:
-            # 重新计算HMAC（排除hmac字段）
-            payload = {k: v for k, v in data.items() if k != "hmac"}
-            expected_hmac = self._compute_hmac(json.dumps(payload, sort_keys=True))
-            if hmac_val != expected_hmac:
-                anomaly_type = AnomalyType.HASH_CHAIN_BREAK
-                anomaly_score = 1.0
-                description = f"HMAC验证失败: expected={expected_hmac[:16]}..., got={hmac_val[:16]}..."
+        # 更新last_hash
+        current_hash = data.get("hash")
+        if current_hash:
+            self.last_hash = current_hash
 
-        # 3. 检测序列号不连续
-        if seq is not None and self.last_seq is not None:
-            if seq != self.last_seq + 1:
-                missing = seq - self.last_seq - 1
-                anomaly_type = AnomalyType.MISSING_EVENTS
-                anomaly_score = min(1.0, missing / 10.0)
-                description = f"序列号不连续: expected={self.last_seq + 1}, got={seq}, missing={missing}"
+        return None
 
-        # 4. 检测时间戳跳跃
+    def _check_sequence_continuity(self, data: Dict) -> Optional[SecurityEvent]:
+        """检查序列号连续性"""
+        seq = data.get("seq")
+        if seq is None:
+            return None
+
+        seq = int(seq)
+        if self.last_seq is not None and seq > 0:
+            expected = self.last_seq + 1
+            if seq != expected:
+                gap = seq - expected
+                severity = "high" if gap > 5 else "medium"
+                return self._build_anomaly_event(
+                    data, AnomalyType.SEQUENCE_ANOMALY, severity,
+                    f"序列号不连续: 期望{expected}, 实际{seq}, 缺失{gap}条"
+                )
+
+        self.last_seq = seq
+        return None
+
+    def _check_timestamp_validity(self, data: Dict) -> Optional[SecurityEvent]:
+        """检查时间戳有效性"""
         timestamp = data.get("timestamp")
-        if timestamp is not None and self.last_timestamp is not None:
-            time_jump = float(timestamp) - self.last_timestamp
-            if time_jump > 3600:  # 超过1小时
-                anomaly_type = AnomalyType.TIMESTAMP_JUMP
-                anomaly_score = min(1.0, time_jump / 86400.0)
-                description = f"时间戳跳跃: {time_jump:.0f}秒"
+        if timestamp is None:
+            return None
 
-        # 5. 检测重复事件
+        timestamp = float(timestamp)
+        if self.last_timestamp is not None:
+            time_jump = timestamp - self.last_timestamp
+            # 时间倒退
+            if time_jump < -1:
+                return self._build_anomaly_event(
+                    data, AnomalyType.TIMESTAMP_JUMP, "high",
+                    f"时间戳倒退: {abs(time_jump):.1f}秒"
+                )
+            # 时间跳跃过大
+            if time_jump > 3600:
+                return self._build_anomaly_event(
+                    data, AnomalyType.TIMESTAMP_JUMP, "medium",
+                    f"时间戳跳跃: {time_jump:.1f}秒"
+                )
+
+        self.last_timestamp = timestamp
+        return None
+
+    def _detect_other_anomalies(self, data: Dict) -> Optional[SecurityEvent]:
+        """检测其他异常模式"""
+        # 重复事件检测
         event_id = data.get("event_id")
-        if event_id is not None:
-            if event_id in self.seen_event_ids:
-                anomaly_type = AnomalyType.DUPLICATE_EVENTS
-                anomaly_score = 0.5
-                description = f"重复事件: event_id={event_id}"
-            else:
-                self.seen_event_ids.add(event_id)
-
-        # 更新状态
-        if seq is not None:
-            self.last_seq = seq
-        if hmac_val is not None:
-            # 计算当前记录的hash（用于下一条的prev_hash验证）
-            self.last_hash = self._compute_hash(line)
-        if timestamp is not None:
-            self.last_timestamp = float(timestamp)
-
-        # 如果检测到异常，构建异常事件
-        if anomaly_type is not None:
-            anomaly_event = SecurityEvent(
-                event_id=f"anomaly_{hashlib.md5(line.encode(), usedforsecurity=False).hexdigest()[:16]}",
-                source=EventSource.AUDIT_CHAIN_ANOMALY,
-                timestamp=float(timestamp) if timestamp else time.time(),
-                sandbox_id=str(data.get("sandbox_id", "unknown")),
-                severity="high" if anomaly_score > 0.7 else "medium",
-                description=description,
-                payload={"raw_event": data, "anomaly_details": description},
-                raw_event=data,
-                anomaly_type=anomaly_type,
-                anomaly_score=anomaly_score,
+        if event_id and event_id in self.seen_event_ids:
+            return self._build_anomaly_event(
+                data, AnomalyType.DUPLICATE_EVENTS, "low",
+                f"重复事件: {event_id}"
             )
-            self.anomalies.append(anomaly_event)
-            return False, anomaly_event
+        if event_id:
+            self.seen_event_ids.add(event_id)
+            if len(self.seen_event_ids) > 10000:
+                self.seen_event_ids.clear()
 
-        return True, None
+        return None
+
+    def _build_anomaly_event(
+        self, data: Dict, anomaly_type: AnomalyType,
+        severity: str, description: str
+    ) -> SecurityEvent:
+        """构建异常安全事件"""
+        return SecurityEvent(
+            event_id=data.get("event_id", f"anomaly-{int(time.time()*1000)}"),
+            source=EventSource.AUDIT_CHAIN_ANOMALY,
+            timestamp=data.get("timestamp", time.time()),
+            sandbox_id=data.get("sandbox_id", "unknown"),
+            severity=severity,
+            description=description,
+            anomaly_type=anomaly_type,
+            payload=data,
+        )
 
     def _compute_hmac(self, payload: str) -> str:
         """计算HMAC-SHA256"""
@@ -637,7 +692,7 @@ class RealDataAdapter:
             return self.seccomp_parser.parse_line(json.dumps(event))
         elif source == EventSource.KVM_VM_EXIT:
             return self.kvm_parser.parse_event(event)
-        elif source == EventSource.AUDIT_CHAIN_ANOMALY:
+        elif source == EventSource.AUDIT_CHAIN_ANOMALY_ANOMALY:
             _, anomaly = self.audit_detector.verify_and_detect(json.dumps(event))
             return anomaly
         return None
