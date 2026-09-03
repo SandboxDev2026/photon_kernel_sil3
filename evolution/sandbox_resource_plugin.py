@@ -312,11 +312,18 @@ class SandboxResourcePlugin:
         基于能力探测自动注册资源
 
         根据探测到的能力，自动注册可用的资源插件。
+        拆分为多个子函数，每个子函数负责注册一种资源类型。
         """
         if not self.capability:
             self.detect_capabilities()
 
-        # LightPool 总是可用（进程沙盒，不需要特殊权限）
+        self._register_light_pool()
+        self._register_strong_pool()
+        self._register_ebpf()
+        self._register_criu()
+
+    def _register_light_pool(self) -> None:
+        """注册 LightPool 资源（进程沙盒，总是可用）"""
         self.register_resource(ResourceCapacity(
             resource_type=ResourceType.LIGHT_POOL,
             total=100,  # 默认 100 个并发实例
@@ -325,7 +332,8 @@ class SandboxResourcePlugin:
             metadata={"isolation": "process", "kernel_shared": True},
         ))
 
-        # StrongPool 需要 KVM
+    def _register_strong_pool(self) -> None:
+        """注册 StrongPool 资源（KVM MicroVM，依赖 KVM 硬件虚拟化）"""
         if self.capability.kvm_available:
             self.register_resource(ResourceCapacity(
                 resource_type=ResourceType.STRONG_POOL,
@@ -348,7 +356,8 @@ class SandboxResourcePlugin:
                 metadata={"reason": "KVM not available", "requires_kvm": True},
             ))
 
-        # eBPF 需要 CAP_BPF
+    def _register_ebpf(self) -> None:
+        """注册 eBPF 资源（依赖 CAP_BPF 能力）"""
         if self.capability.cap_bpf_available:
             self.register_resource(ResourceCapacity(
                 resource_type=ResourceType.EBPF,
@@ -366,7 +375,8 @@ class SandboxResourcePlugin:
                 metadata={"reason": "CAP_BPF not available"},
             ))
 
-        # CRIU 需要 criu 二进制
+    def _register_criu(self) -> None:
+        """注册 CRIU 资源（依赖 criu 二进制）"""
         if self.capability.criu_available:
             self.register_resource(ResourceCapacity(
                 resource_type=ResourceType.CRIU,

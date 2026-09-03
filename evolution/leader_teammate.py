@@ -345,6 +345,7 @@ class LeaderAgent:
         执行 Outer Loop（团队进化循环）
 
         阶段：GOAL → PLAN → EXECUTE → EVALUATE → UPDATE
+        拆分为多个子函数，每个子函数负责一个阶段。
         """
         self.outer_loop_phase = LoopPhase.GOAL
         self.workspace.add_log(self.agent_id, f"[GOAL] Task: {task.get('description', 'Unknown')}")
@@ -354,33 +355,15 @@ class LeaderAgent:
 
         # EXECUTE: 分配并执行
         self.outer_loop_phase = LoopPhase.EXECUTE
-        results = []
-        for subtask in subtasks:
-            agent_id = self.assign_task(subtask)
-            if agent_id:
-                result = self.execute_inner_loop(agent_id, subtask)
-                results.append(result)
-            else:
-                # 无可用 Teammate，任务等待
-                self.workspace.add_log(self.agent_id, f"[WAIT] No available teammate for {subtask.get('task_id')}")
+        results = self._outer_loop_execute_subtasks(subtasks)
 
         # EVALUATE: 评估结果
         self.outer_loop_phase = LoopPhase.EVALUATE
-        success_count = sum(1 for r in results if r.success)
-        total_count = len(results)
-        success_rate = success_count / total_count if total_count > 0 else 0
+        success_count, total_count, success_rate = self._outer_loop_evaluate_results(results)
 
         # UPDATE: 更新技能库和策略
         self.outer_loop_phase = LoopPhase.UPDATE
-        if success_rate < 0.8:
-            self.workspace.add_log(self.agent_id, f"[UPDATE] Success rate {success_rate:.2%} < 80%, triggering evolution")
-            # 触发进化（简化）
-            self.evolution_history.append({
-                "timestamp": time.time(),
-                "task_id": task.get("task_id"),
-                "success_rate": success_rate,
-                "action": "skill_evolution_triggered",
-            })
+        self._outer_loop_update_evolution(task, success_rate)
 
         return {
             "task_id": task.get("task_id"),
@@ -391,6 +374,58 @@ class LeaderAgent:
             "outer_loop_phases": ["goal", "plan", "execute", "evaluate", "update"],
             "artifacts": self.workspace.get_all_artifacts(),
         }
+
+    def _outer_loop_execute_subtasks(self, subtasks: List[Dict[str, Any]]) -> List[TaskResult]:
+        """
+        Outer Loop EXECUTE 阶段：分配并执行所有子任务
+
+        遍历子任务列表，为每个子任务分配合适的 Teammate，
+        然后执行 Inner Loop。无可用 Teammate 时记录等待日志。
+        """
+        results = []
+        for subtask in subtasks:
+            agent_id = self.assign_task(subtask)
+            if agent_id:
+                result = self.execute_inner_loop(agent_id, subtask)
+                results.append(result)
+            else:
+                # 无可用 Teammate，任务等待
+                self.workspace.add_log(
+                    self.agent_id,
+                    f"[WAIT] No available teammate for {subtask.get('task_id')}"
+                )
+        return results
+
+    def _outer_loop_evaluate_results(self, results: List[TaskResult]) -> Tuple[int, int, float]:
+        """
+        Outer Loop EVALUATE 阶段：评估执行结果
+
+        计算成功数量、总数量和成功率。
+        返回: (success_count, total_count, success_rate)
+        """
+        success_count = sum(1 for r in results if r.success)
+        total_count = len(results)
+        success_rate = success_count / total_count if total_count > 0 else 0
+        return success_count, total_count, success_rate
+
+    def _outer_loop_update_evolution(self, task: Dict[str, Any], success_rate: float) -> None:
+        """
+        Outer Loop UPDATE 阶段：更新技能库和策略
+
+        成功率低于 80% 时触发进化，记录进化历史。
+        """
+        if success_rate < 0.8:
+            self.workspace.add_log(
+                self.agent_id,
+                f"[UPDATE] Success rate {success_rate:.2%} < 80%, triggering evolution"
+            )
+            # 触发进化（简化）
+            self.evolution_history.append({
+                "timestamp": time.time(),
+                "task_id": task.get("task_id"),
+                "success_rate": success_rate,
+                "action": "skill_evolution_triggered",
+            })
 
     def get_idle_teammates(self) -> List[TeammateAgent]:
         """获取空闲 Teammate 列表"""
