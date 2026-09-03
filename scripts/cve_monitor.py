@@ -64,7 +64,7 @@ PROJECT_DEPENDENCIES = [
     },
     {
         "name": "OpenSSL (可选)",
-        "version": ">=1.1.1",
+        "version": ">=3.0.7",  # 修复 CVE-2022-3602
         "license": "Apache-2.0",
         "type": "crypto",
         "purpose": "HMAC-SHA256 审计哈希链（可选，有纯C++ fallback）",
@@ -73,7 +73,7 @@ PROJECT_DEPENDENCIES = [
     },
     {
         "name": "gRPC C++ (可选)",
-        "version": ">=1.50",
+        "version": ">=1.59.0",  # 修复 CVE-2023-44487
         "license": "Apache-2.0",
         "type": "network",
         "purpose": "gRPC 审计上报（可选，Python gRPC 已替代）",
@@ -117,7 +117,7 @@ PROJECT_DEPENDENCIES = [
     },
     {
         "name": "grpcio (Python)",
-        "version": ">=1.50",
+        "version": ">=1.59.0",  # 修复 CVE-2023-44487
         "license": "Apache-2.0",
         "type": "network",
         "purpose": "Python gRPC 服务端/客户端（已端到端实测）",
@@ -437,6 +437,202 @@ def print_text_report(report):
     print("=" * 70)
 
 
+# ==================== 实际安装版本检测（v22 新增） ====================
+
+def detect_installed_versions():
+    """
+    检测当前系统实际安装的依赖版本。
+    
+    返回字典，包含各组件的实际版本和是否已修复对应 CVE。
+    """
+    versions = {}
+    
+    # 1. OpenSSL 版本检测
+    try:
+        result = subprocess.run(['openssl', 'version'], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            match = re.search(r'OpenSSL (\d+\.\d+\.\d+)', result.stdout)
+            if match:
+                openssl_ver = match.group(1)
+                versions['openssl'] = {
+                    'version': openssl_ver,
+                    'installed': True,
+                    'cve_2022_3602_fixed': _version_gte(openssl_ver, '3.0.7'),
+                }
+            else:
+                versions['openssl'] = {'version': 'unknown', 'installed': True}
+        else:
+            versions['openssl'] = {'version': 'not_installed', 'installed': False}
+    except Exception:
+        versions['openssl'] = {'version': 'detection_failed', 'installed': False}
+    
+    # 2. Python OpenSSL 版本检测
+    try:
+        import ssl
+        py_openssl_ver = ssl.OPENSSL_VERSION
+        match = re.search(r'OpenSSL (\d+\.\d+\.\d+)', py_openssl_ver)
+        if match:
+            ver = match.group(1)
+            versions['python_openssl'] = {
+                'version': ver,
+                'installed': True,
+                'cve_2022_3602_fixed': _version_gte(ver, '3.0.7'),
+            }
+    except Exception:
+        versions['python_openssl'] = {'version': 'unknown', 'installed': False}
+    
+    # 3. gRPC Python 版本检测
+    try:
+        import grpc
+        grpc_ver = grpc.__version__
+        versions['grpc_python'] = {
+            'version': grpc_ver,
+            'installed': True,
+            'cve_2023_44487_fixed': _version_gte(grpc_ver, '1.59.0'),
+            'cve_2024_24762_fixed': _version_gte(grpc_ver, '1.62.0'),
+        }
+    except ImportError:
+        versions['grpc_python'] = {'version': 'not_installed', 'installed': False}
+    except Exception:
+        versions['grpc_python'] = {'version': 'unknown', 'installed': True}
+    
+    # 4. gRPC C++ 版本检测
+    try:
+        result = subprocess.run(['pkg-config', '--modversion', 'grpc++'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            grpc_cpp_ver = result.stdout.strip()
+            versions['grpc_cpp'] = {
+                'version': grpc_cpp_ver,
+                'installed': True,
+                'cve_2023_44487_fixed': _version_gte(grpc_cpp_ver, '1.56.0'),
+            }
+        else:
+            versions['grpc_cpp'] = {'version': 'not_installed', 'installed': False}
+    except Exception:
+        versions['grpc_cpp'] = {'version': 'detection_failed', 'installed': False}
+    
+    # 5. Firecracker 版本检测
+    try:
+        result = subprocess.run(['firecracker', '--version'], 
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            match = re.search(r'(\d+\.\d+\.\d+)', result.stdout)
+            if match:
+                fc_ver = match.group(1)
+                versions['firecracker'] = {
+                    'version': fc_ver,
+                    'installed': True,
+                    'cve_2023_41051_fixed': _version_gte(fc_ver, '1.5.0'),
+                }
+            else:
+                versions['firecracker'] = {'version': 'unknown', 'installed': True}
+        else:
+            versions['firecracker'] = {'version': 'not_installed', 'installed': False}
+    except Exception:
+        versions['firecracker'] = {'version': 'detection_failed', 'installed': False}
+    
+    # 6. Protobuf 版本检测
+    try:
+        import google.protobuf
+        proto_ver = google.protobuf.__version__
+        versions['protobuf'] = {'version': proto_ver, 'installed': True}
+    except ImportError:
+        versions['protobuf'] = {'version': 'not_installed', 'installed': False}
+    except Exception:
+        versions['protobuf'] = {'version': 'unknown', 'installed': True}
+    
+    return versions
+
+
+def _version_gte(version_str, min_version):
+    """
+    比较版本号是否 >= min_version。
+    
+    支持 x.y.z 格式的版本号比较。
+    """
+    try:
+        def parse_version(v):
+            parts = re.findall(r'\d+', v)
+            return [int(p) for p in parts[:3]] + [0] * (3 - len(parts[:3]))
+        
+        v1 = parse_version(version_str)
+        v2 = parse_version(min_version)
+        return v1 >= v2
+    except Exception:
+        return False  # 解析失败时保守返回 False
+
+
+def print_version_detection_summary(versions):
+    """打印版本检测摘要。"""
+    print("\n" + "=" * 60)
+    print("实际安装依赖版本检测（v22 新增）")
+    print("=" * 60)
+    
+    component_names = {
+        'openssl': 'OpenSSL (系统)',
+        'python_openssl': 'OpenSSL (Python)',
+        'grpc_python': 'gRPC (Python)',
+        'grpc_cpp': 'gRPC (C++)',
+        'firecracker': 'Firecracker',
+        'protobuf': 'Protobuf',
+    }
+    
+    high_cve_status = []
+    
+    for key, name in component_names.items():
+        info = versions.get(key, {})
+        if info.get('installed'):
+            ver = info.get('version', 'unknown')
+            status_parts = [f"v{ver}"]
+            
+            # 检查 HIGH CVE 修复状态
+            if key == 'openssl' and 'cve_2022_3602_fixed' in info:
+                fixed = info['cve_2022_3602_fixed']
+                status = "✅ CVE-2022-3602 已修复" if fixed else "⚠️ CVE-2022-3602 未修复"
+                status_parts.append(status)
+                high_cve_status.append(('CVE-2022-3602 (OpenSSL)', fixed))
+            
+            if key == 'python_openssl' and 'cve_2022_3602_fixed' in info:
+                fixed = info['cve_2022_3602_fixed']
+                status = "✅ CVE-2022-3602 已修复" if fixed else "⚠️ CVE-2022-3602 未修复"
+                status_parts.append(status)
+            
+            if key == 'grpc_python' and 'cve_2023_44487_fixed' in info:
+                fixed = info['cve_2023_44487_fixed']
+                status = "✅ CVE-2023-44487 已修复" if fixed else "⚠️ CVE-2023-44487 未修复"
+                status_parts.append(status)
+                high_cve_status.append(('CVE-2023-44487 (gRPC Python)', fixed))
+            
+            if key == 'grpc_cpp' and 'cve_2023_44487_fixed' in info:
+                fixed = info['cve_2023_44487_fixed']
+                status = "✅ CVE-2023-44487 已修复" if fixed else "⚠️ CVE-2023-44487 未修复"
+                status_parts.append(status)
+                high_cve_status.append(('CVE-2023-44487 (gRPC C++)', fixed))
+            
+            print(f"  {name}: {' | '.join(status_parts)}")
+        else:
+            print(f"  {name}: 未安装")
+    
+    # HIGH CVE 总结
+    print("\n" + "-" * 60)
+    print("HIGH CVE 修复状态总结:")
+    all_fixed = True
+    for cve_name, fixed in high_cve_status:
+        status = "✅ 已修复" if fixed else "⚠️ 未修复"
+        print(f"  {cve_name}: {status}")
+        if not fixed:
+            all_fixed = False
+    
+    if all_fixed and high_cve_status:
+        print("\n  🎉 所有已安装组件的 HIGH CVE 均已修复！")
+    elif not high_cve_status:
+        print("\n  ⚠️ 未检测到相关组件安装，无法确认 HIGH CVE 修复状态")
+    else:
+        print("\n  ⚠️ 部分 HIGH CVE 未修复，请升级相关组件")
+    
+    print("=" * 60)
+
 def main():
     parser = argparse.ArgumentParser(description='Photon Kernel Sandbox - CVE 监控与 SBOM')
     parser.add_argument('--kernel', help='指定内核版本（默认当前内核）')
@@ -471,6 +667,10 @@ def main():
               f"cves={s['total_known']} critical={s['critical']} high={s['high']}")
     else:
         print_text_report(report)
+        # v22 新增：实际安装版本检测（仅在文本报告模式输出）
+        if not args.json and not args.cron:
+            installed_versions = detect_installed_versions()
+            print_version_detection_summary(installed_versions)
 
     # 返回码：有 critical CVE 返回 2，有 high 返回 1，否则 0
     if report["cve_summary"]["critical"] > 0:
@@ -482,3 +682,5 @@ def main():
 
 if __name__ == '__main__':
     sys.exit(main())
+
+
