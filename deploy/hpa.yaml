@@ -1,0 +1,130 @@
+# PhotonBox HPA 弹性伸缩配置
+# 结合Kubernetes的HPA（水平Pod自动扩缩容）机制，
+# 让沙盒能根据QPS和GPU利用率（建议维持70-85%）自动扩缩容。
+
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: photonbox-sandbox-hpa
+  namespace: photonbox
+  labels:
+    app: photonbox
+    component: sandbox
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: photonbox-sandbox
+  minReplicas: 3  # 最小实例数（保证高可用）
+  maxReplicas: 50  # 最大实例数
+  metrics:
+    # CPU利用率（基础指标）
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # 内存利用率
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+    # 自定义指标：QPS（每秒查询数）
+    - type: Pods
+      pods:
+        metric:
+          name: photon_inference_qps
+        target:
+          type: AverageValue
+          averageValue: "100"  # 每Pod目标QPS
+
+    # 自定义指标：GPU利用率（目标70-85%）
+    - type: Pods
+      pods:
+        metric:
+          name: photon_gpu_utilization
+        target:
+          type: AverageValue
+          averageValue: "75"  # 目标GPU利用率75%（70-85%区间）
+
+    # 自定义指标：请求队列深度
+    - type: Pods
+      pods:
+        metric:
+          name: photon_inference_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "50"
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60  # 扩容稳定窗口（防止抖动）
+      policies:
+        - type: Percent
+          value: 50  # 每次最多扩容50%
+          periodSeconds: 60
+        - type: Pods
+          value: 5  # 每次最多扩容5个Pod
+          periodSeconds: 60
+      selectPolicy: Max  # 选择最大扩容策略
+
+    scaleDown:
+      stabilizationWindowSeconds: 300  # 缩容稳定窗口（5分钟，防止频繁缩容）
+      policies:
+        - type: Percent
+          value: 25  # 每次最多缩容25%
+          periodSeconds: 120
+        - type: Pods
+          value: 2  # 每次最多缩容2个Pod
+          periodSeconds: 120
+      selectPolicy: Min  # 选择最小缩容策略（保守缩容）
+
+---
+# StrongPool (KVM MicroVM) 专用HPA
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: photonbox-strongpool-hpa
+  namespace: photonbox
+  labels:
+    app: photonbox
+    component: strongpool
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: photonbox-strongpool
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 60  # MicroVM CPU开销大，阈值低一些
+    - type: Pods
+      pods:
+        metric:
+          name: photon_active_microvms
+        target:
+          type: AverageValue
+          averageValue: "50"  # 每Node最多50个MicroVM
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 120  # MicroVM启动慢，扩容窗口长一些
+      policies:
+        - type: Pods
+          value: 3
+          periodSeconds: 120
+    scaleDown:
+      stabilizationWindowSeconds: 600  # 缩容更保守（10分钟）
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

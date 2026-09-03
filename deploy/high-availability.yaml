@@ -1,0 +1,300 @@
+# PhotonBox 高可用架构配置
+# 设计至少双实例 + 负载均衡的高可用架构，
+# 支持模型的蓝绿部署与热切换，确保在升级或节点故障时业务零中断。
+
+# ============================================================
+# 1. 负载均衡 Service
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: photonbox-sandbox
+  namespace: photonbox
+  labels:
+    app: photonbox
+    component: sandbox
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  selector:
+    app: photonbox
+    component: sandbox
+  ports:
+    - name: grpc
+      port: 50051
+      targetPort: 50051
+      protocol: TCP
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 9090
+      targetPort: 9090
+      protocol: TCP
+  sessionAffinity: None  # 无会话亲和，负载均匀
+  externalTrafficPolicy: Cluster  # 集群级负载均衡
+
+---
+# ============================================================
+# 2. 主部署（Blue 环境）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photonbox-sandbox-blue
+  namespace: photonbox
+  labels:
+    app: photonbox
+    component: sandbox
+    environment: blue
+spec:
+  replicas: 3  # 至少3实例，保证高可用
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1  # 滚动更新时最多多1个Pod
+      maxUnavailable: 0  # 滚动更新时不允许不可用（零中断）
+  selector:
+    matchLabels:
+      app: photonbox
+      component: sandbox
+      environment: blue
+  template:
+    metadata:
+      labels:
+        app: photonbox
+        component: sandbox
+        environment: blue
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      affinity:
+        podAntiAffinity:  # Pod反亲和，分散到不同节点
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                labelSelector:
+                  matchExpressions:
+                    - key: app
+                      operator: In
+                      values: ["photonbox"]
+                topologyKey: kubernetes.io/hostname
+      topologySpreadConstraints:  # 拓扑分布约束
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: photonbox
+      containers:
+        - name: sandbox
+          image: photonbox/sandbox:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 50051
+              name: grpc
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"  # GPU请求
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+              nvidia.com/gpu: "1"
+          env:
+            - name: PHOTON_ENV
+              value: "production"
+            - name: PHOTON_ENABLE_GRPC
+              value: "true"
+            - name: PHOTON_ENABLE_EBPF
+              value: "true"
+            - name: PHOTON_LOG_LEVEL
+              value: "info"
+          livenessProbe:  # 存活探针
+            grpc:
+              port: 50051
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:  # 就绪探针
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          startupProbe:  # 启动探针（给慢启动应用更多时间）
+            grpc:
+              port: 50051
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            failureThreshold: 30  # 最多5分钟启动时间
+          volumeMounts:
+            - name: sandbox-data
+              mountPath: /data
+            - name: audit-logs
+              mountPath: /var/log/photon
+      volumes:
+        - name: sandbox-data
+          emptyDir: {}
+        - name: audit-logs
+          emptyDir: {}
+      terminationGracePeriodSeconds: 60  # 优雅终止（60秒）
+
+---
+# ============================================================
+# 3. 备用部署（Green 环境，用于蓝绿部署）
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: photonbox-sandbox-green
+  namespace: photonbox
+  labels:
+    app: photonbox
+    component: sandbox
+    environment: green
+spec:
+  replicas: 0  # 默认0实例，蓝绿切换时扩容
+  selector:
+    matchLabels:
+      app: photonbox
+      component: sandbox
+      environment: green
+  template:
+    metadata:
+      labels:
+        app: photonbox
+        component: sandbox
+        environment: green
+    spec:
+      containers:
+        - name: sandbox
+          image: photonbox/sandbox:canary  # 金丝雀版本
+          ports:
+            - containerPort: 50051
+            - containerPort: 8080
+            - containerPort: 9090
+          resources:
+            requests:
+              cpu: "2"
+              memory: "4Gi"
+            limits:
+              cpu: "4"
+              memory: "8Gi"
+          livenessProbe:
+            grpc:
+              port: 50051
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+---
+# ============================================================
+# 4. PodDisruptionBudget（Pod中断预算，保证最小可用实例）
+# ============================================================
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: photonbox-sandbox-pdb
+  namespace: photonbox
+spec:
+  minAvailable: 2  # 至少2个Pod可用（保证高可用）
+  selector:
+    matchLabels:
+      app: photonbox
+      component: sandbox
+
+---
+# ============================================================
+# 5. NetworkPolicy（网络策略，限制访问）
+# ============================================================
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: photonbox-sandbox-netpol
+  namespace: photonbox
+spec:
+  podSelector:
+    matchLabels:
+      app: photonbox
+      component: sandbox
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: ingress-nginx
+      ports:
+        - port: 8080
+        - port: 50051
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              name: monitoring
+      ports:
+        - port: 9090
+  egress:
+    - to:
+        - namespaceSelector: {}
+      ports:
+        - port: 53  # DNS
+          protocol: UDP
+        - port: 443  # HTTPS
+        - port: 50051  # gRPC内部通信
+
+---
+# ============================================================
+# 6. 蓝绿切换 Service（用于流量切换）
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: photonbox-sandbox-blue
+  namespace: photonbox
+spec:
+  selector:
+    app: photonbox
+    component: sandbox
+    environment: blue
+  ports:
+    - port: 8080
+      targetPort: 8080
+    - port: 50051
+      targetPort: 50051
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: photonbox-sandbox-green
+  namespace: photonbox
+spec:
+  selector:
+    app: photonbox
+    component: sandbox
+    environment: green
+  ports:
+    - port: 8080
+      targetPort: 8080
+    - port: 50051
+      targetPort: 50051
