@@ -220,10 +220,10 @@ class RedAgent:
         # 加权随机选择
         total_weight = sum(weights)
         if total_weight == 0:
-            return random.choice(self.attack_cases)
+            return random.choice(self.attack_cases)  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
 
         normalized = [w / total_weight for w in weights]
-        return random.choices(self.attack_cases, weights=normalized, k=1)[0]
+        return random.choices(self.attack_cases, weights=normalized, k=1)[0]  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
 
     def mutate_attack_case(self, base_case: AttackCase) -> AttackCase:
         """
@@ -234,7 +234,7 @@ class RedAgent:
         - 组合多种攻击类型
         - 调整攻击时序
         """
-        mutation_type = random.choice(["payload_modify", "type_combine", "timing_adjust", "parameter_randomize"])
+        mutation_type = random.choice(["payload_modify", "type_combine", "timing_adjust", "parameter_randomize"])  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
 
         if mutation_type == "payload_modify":
             # 修改payload的关键参数
@@ -242,16 +242,16 @@ class RedAgent:
             new_desc = base_case.description + " (带延迟)"
         elif mutation_type == "type_combine":
             # 组合另一种攻击类型
-            other_type = random.choice([t for t in AttackType if t != base_case.attack_type])
+            other_type = random.choice([t for t in AttackType if t != base_case.attack_type])  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             new_payload = base_case.payload + f" # combined with {other_type.value}"
             new_desc = f"{base_case.description} + {other_type.value}"
         elif mutation_type == "timing_adjust":
             # 调整攻击时序
-            new_payload = f"sleep {random.uniform(0.01, 1.0)} && {base_case.payload}"
+            new_payload = f"sleep {random.uniform(0.01, 1.0)} && {base_case.payload}"  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             new_desc = base_case.description + " (时序调整)"
         else:
             # 参数随机化
-            new_payload = base_case.payload.replace("0", str(random.randint(1, 9)))
+            new_payload = base_case.payload.replace("0", str(random.randint(1, 9)))  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             new_desc = base_case.description + " (参数随机化)"
 
         new_case = AttackCase(
@@ -260,7 +260,7 @@ class RedAgent:
             description=new_desc,
             payload=new_payload,
             target_component=base_case.target_component,
-            difficulty=min(base_case.difficulty + random.uniform(-0.1, 0.1), 1.0),
+            difficulty=min(base_case.difficulty + random.uniform(-0.1, 0.1), 1.0),  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
         )
         self.attack_cases.append(new_case)
         return new_case
@@ -370,7 +370,7 @@ class BlueAgent:
             if attack_case.attack_type in rule.target_attack_types:
                 # 基于规则有效性模拟检测（实际应调用真实检测逻辑）
                 detection_probability = rule.effectiveness * (1.0 - attack_case.difficulty * 0.3)
-                if random.random() < detection_probability:
+                if random.random() < detection_probability:  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
                     triggered_rules.append(rule)
 
         detection_delay = (time.time() - start_time) * 1000
@@ -409,23 +409,23 @@ class BlueAgent:
         - 成功拦截→规则强化
         - 被绕过→规则修复/扩展
         """
-        evolution_type = random.choice(["expand_coverage", "tune_threshold", "combine_rules", "add_heuristic"])
+        evolution_type = random.choice(["expand_coverage", "tune_threshold", "combine_rules", "add_heuristic"])  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
 
         if evolution_type == "expand_coverage":
             # 扩展覆盖的攻击类型
             new_targets = base_rule.target_attack_types + [
-                random.choice([t for t in AttackType if t not in base_rule.target_attack_types])
+                random.choice([t for t in AttackType if t not in base_rule.target_attack_types])  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             ]
             new_desc = base_rule.description + " (扩展覆盖)"
             new_effectiveness = base_rule.effectiveness * 0.9  # 扩展后有效性可能下降
         elif evolution_type == "tune_threshold":
             # 调整检测阈值
-            new_effectiveness = min(1.0, base_rule.effectiveness + random.uniform(0.05, 0.15))
+            new_effectiveness = min(1.0, base_rule.effectiveness + random.uniform(0.05, 0.15))  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             new_desc = base_rule.description + " (阈值优化)"
             new_targets = base_rule.target_attack_types
         elif evolution_type == "combine_rules":
             # 组合另一条规则
-            other = random.choice([r for r in self.defense_rules if r.rule_id != base_rule.rule_id])
+            other = random.choice([r for r in self.defense_rules if r.rule_id != base_rule.rule_id])  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             new_targets = list(set(base_rule.target_attack_types + other.target_attack_types))
             new_effectiveness = (base_rule.effectiveness + other.effectiveness) / 2
             new_desc = f"{base_rule.description} + {other.description}"
@@ -506,7 +506,7 @@ class RedBlueAdversaryTrainer:
         attack_case = self.red_agent.select_attack_case()
 
         # 可能变异攻击用例
-        if self.enable_mutation and random.random() < self.mutation_rate:
+        if self.enable_mutation and random.random() < self.mutation_rate:  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
             attack_case = self.red_agent.mutate_attack_case(attack_case)
 
         # 2. 蓝方检测攻击
@@ -529,7 +529,7 @@ class RedBlueAdversaryTrainer:
             attack_success=attack_success,
             defense_success=defense_success,
             detection_delay_ms=detection_delay,
-            resource_impact={"cpu": random.uniform(0, 10), "memory": random.uniform(0, 100)},
+            resource_impact={"cpu": random.uniform(0, 10), "memory": random.uniform(0, 100)},  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
         )
         self.rounds.append(round_record)
 
@@ -565,95 +565,54 @@ class RedBlueAdversaryTrainer:
 
         借鉴 "Institutional Red-Teaming" 论文：
         不仅测试模型/代码，还测试部署规则、权限配置、审计流程等制度层面。
-
-        测试维度：
-        1. 部署规则有效性：配置是否正确应用
-        2. 权限配置最小化：是否遵循最小权限原则
-        3. 审计流程完整性：审计日志是否完整、可追溯
-        4. 应急响应能力：安全事件发生时的响应速度
-        5. 变更管理：配置变更是否经过审批和验证
         """
-        test_dimensions = [
-            {
-                "dimension": "部署规则有效性",
-                "description": "验证安全配置是否正确应用到运行环境",
-                "test_cases": [
-                    "seccomp规则是否实际加载",
-                    "cgroup资源限制是否生效",
-                    "namespace隔离是否完整",
-                    "eBPF程序是否实际运行",
-                ],
-            },
-            {
-                "dimension": "权限配置最小化",
-                "description": "验证是否遵循最小权限原则",
-                "test_cases": [
-                    "是否有不必要的CAP_SYS_ADMIN",
-                    "是否有不必要的root权限",
-                    "文件权限是否过宽",
-                    "网络访问是否过度开放",
-                ],
-            },
-            {
-                "dimension": "审计流程完整性",
-                "description": "验证审计日志是否完整、可追溯",
-                "test_cases": [
-                    "HMAC哈希链是否完整",
-                    "日志是否有丢失",
-                    "日志是否可篡改",
-                    "审计事件是否覆盖关键操作",
-                ],
-            },
-            {
-                "dimension": "应急响应能力",
-                "description": "验证安全事件发生时的响应速度",
-                "test_cases": [
-                    "逃逸检测延迟是否<100ms",
-                    "沙盒销毁是否<1s",
-                    "告警是否及时触发",
-                    "事件是否自动隔离",
-                ],
-            },
-            {
-                "dimension": "变更管理",
-                "description": "验证配置变更是否经过审批和验证",
-                "test_cases": [
-                    "安全配置变更是否有审批记录",
-                    "变更是否经过测试验证",
-                    "是否有回滚机制",
-                    "变更是否有审计记录",
-                ],
-            },
+        dimensions = self._get_institutional_test_dimensions()
+        results = [self._run_institutional_test_dimension(dim) for dim in dimensions]
+        return self._summarize_institutional_test_results(results)
+
+    def _get_institutional_test_dimensions(self):
+        """获取制度性红队测试维度定义"""
+        return [
+            {"dimension": "部署规则有效性", "description": "验证安全配置是否正确应用到运行环境",
+             "test_cases": ["seccomp规则是否实际加载", "cgroup资源限制是否生效", "namespace隔离是否完整", "eBPF程序是否实际运行"]},
+            {"dimension": "权限配置最小化", "description": "验证是否遵循最小权限原则",
+             "test_cases": ["是否有不必要的CAP_SYS_ADMIN", "是否有不必要的root权限", "文件权限是否过宽", "网络访问是否过度开放"]},
+            {"dimension": "审计流程完整性", "description": "验证审计日志是否完整、可追溯",
+             "test_cases": ["HMAC哈希链是否完整", "日志是否有丢失", "日志是否可篡改", "审计事件是否覆盖关键操作"]},
+            {"dimension": "应急响应能力", "description": "验证安全事件发生时的响应速度",
+             "test_cases": ["逃逸检测延迟是否<100ms", "沙盒销毁是否<1s", "告警是否及时触发", "事件是否自动隔离"]},
+            {"dimension": "变更管理", "description": "验证配置变更是否经过审批和验证",
+             "test_cases": ["安全配置变更是否有审批记录", "变更是否经过测试验证", "是否有回滚机制", "变更是否有审计记录"]},
         ]
 
-        results = []
-        for dim in test_dimensions:
-            dim_result = {
-                "dimension": dim["dimension"],
-                "description": dim["description"],
-                "test_cases": [],
-                "passed": 0,
-                "total": len(dim["test_cases"]),
-            }
-            for tc in dim["test_cases"]:
-                # 模拟测试结果（实际应调用真实检查逻辑）
-                passed = random.random() > 0.2  # 80%通过率
-                dim_result["test_cases"].append({
-                    "name": tc,
-                    "passed": passed,
-                    "notes": "自动检测" if passed else "需要人工复核",
-                })
-                if passed:
-                    dim_result["passed"] += 1
-            dim_result["pass_rate"] = dim_result["passed"] / dim_result["total"]
-            results.append(dim_result)
+    def _run_institutional_test_dimension(self, dim):
+        """执行单个维度的制度性红队测试"""
+        dim_result = {
+            "dimension": dim["dimension"],
+            "description": dim["description"],
+            "test_cases": [],
+            "passed": 0,
+            "total": len(dim["test_cases"]),
+        }
+        for tc in dim["test_cases"]:
+            passed = random.random() > 0.2  # 80%通过率(模拟,实际应调用真实检查逻辑)  # nosec B311 - random用于红蓝对抗模拟/变异,非安全加密目的
+            dim_result["test_cases"].append({
+                "name": tc, "passed": passed,
+                "notes": "自动检测" if passed else "需要人工复核",
+            })
+            if passed:
+                dim_result["passed"] += 1
+        dim_result["pass_rate"] = dim_result["passed"] / dim_result["total"]
+        return dim_result
 
+    def _summarize_institutional_test_results(self, results):
+        """汇总制度性红队测试结果"""
+        overall = sum(r["passed"] for r in results) / sum(r["total"] for r in results)
         self.institutional_tests.append({
             "timestamp": time.time(),
             "results": results,
-            "overall_pass_rate": sum(r["passed"] for r in results) / sum(r["total"] for r in results),
+            "overall_pass_rate": overall,
         })
-
         return self.institutional_tests[-1]
 
     def get_training_statistics(self) -> Dict[str, Any]:

@@ -172,7 +172,7 @@ class EventInputValidator:
         source: Optional[str] = None,
     ) -> ValidationResult:
         """
-        校验外部输入事件
+        校验外部输入事件(校验链模式:依次执行8个校验步骤)
 
         Args:
             event: 事件字典
@@ -183,56 +183,43 @@ class EventInputValidator:
         """
         with self._lock:
             self._stats.total_events += 1
-
-            # 1. 来源校验
             event_source = source or event.get("source", "")
-            source_result = self._validate_source(event_source)
-            if not source_result.valid:
-                return self._reject(source_result, event)
 
-            # 2. 频率限制
-            rate_result = self._check_rate_limit(event_source)
-            if not rate_result.valid:
-                return self._reject(rate_result, event)
+            # 构建校验步骤链(条件步骤根据配置动态加入)
+            steps = self._build_validation_chain(event_source)
+            pattern_result = None
 
-            # 3. 结构校验
-            struct_result = self._validate_structure(event)
-            if not struct_result.valid:
-                return self._reject(struct_result, event)
+            # 依次执行校验,失败立即拒绝
+            for step_name, step_fn in steps:
+                result = step_fn(event)
+                if not result.valid:
+                    return self._reject(result, event)
+                if step_name == "malicious_pattern":
+                    pattern_result = result
 
-            # 4. 内容校验(字段长度、类型)
-            content_result = self._validate_content(event)
-            if not content_result.valid:
-                return self._reject(content_result, event)
-
-            # 5. 恶意模式检测
-            pattern_result = self._detect_malicious_patterns(event)
-            if not pattern_result.valid:
-                return self._reject(pattern_result, event)
-
-            # 6. 签名验证
-            if self.enable_signature_check:
-                sig_result = self._verify_signature(event)
-                if not sig_result.valid:
-                    return self._reject(sig_result, event)
-
-            # 7. 去重
-            if self.enable_duplicate_check:
-                dup_result = self._check_duplicate(event)
-                if not dup_result.valid:
-                    return self._reject(dup_result, event)
-
-            # 8. 清洗输出
+            # 全部通过:清洗输出
             cleaned = self._clean_event(event)
             self._stats.valid_events += 1
-
             return ValidationResult(
-                valid=True,
-                code=ValidationResultCode.VALID,
-                reason="",
+                valid=True, code=ValidationResultCode.VALID, reason="",
                 cleaned_event=cleaned,
-                risk_score=pattern_result.risk_score,
+                risk_score=pattern_result.risk_score if pattern_result else 0.0,
             )
+
+    def _build_validation_chain(self, event_source):
+        """构建校验步骤链(根据配置动态加入条件步骤)"""
+        steps = [
+            ("source", lambda e: self._validate_source(event_source)),
+            ("rate_limit", lambda e: self._check_rate_limit(event_source)),
+            ("structure", self._validate_structure),
+            ("content", self._validate_content),
+            ("malicious_pattern", self._detect_malicious_patterns),
+        ]
+        if self.enable_signature_check:
+            steps.append(("signature", self._verify_signature))
+        if self.enable_duplicate_check:
+            steps.append(("duplicate", self._check_duplicate))
+        return steps
 
     def _validate_source(self, source: str) -> ValidationResult:
         """校验事件来源"""
