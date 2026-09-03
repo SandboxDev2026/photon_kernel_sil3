@@ -56,10 +56,38 @@ class SandboxClient:
         self.timeout = timeout
         self.max_retries = max_retries
 
+    def _build_request(self, payload: Dict[str, Any]) -> urllib.request.Request:
+        """构建HTTP请求"""
+        url = f"{self.base_url}/execute"
+        return urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+
+    def _parse_success_response(self, data: Dict[str, Any], start_time: float) -> SandboxResult:
+        """解析成功响应"""
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        return SandboxResult(
+            success=data.get("status") == "ok",
+            output=data.get("output", ""),
+            error=data.get("error", ""),
+            execution_time_ms=elapsed_ms,
+            risk_score=data.get("risk_score", 0),
+            backend=data.get("backend", ""),
+            security_alert=data.get("security_alert", False),
+        )
+
+    def _build_error_result(self, error_msg: str, start_time: float) -> SandboxResult:
+        """构建错误结果"""
+        elapsed_ms = int((time.time() - start_time) * 1000)
+        return SandboxResult(success=False, error=error_msg, execution_time_ms=elapsed_ms)
+
     def execute(self, code: str, language: str = "python",
                 task_id: str = "") -> SandboxResult:
         """
-        提交代码到沙盒执行
+        提交代码到沙盒执行（优化版：拆分为3个子函数）
 
         Args:
             code: 要执行的代码
@@ -69,54 +97,25 @@ class SandboxClient:
         Returns:
             SandboxResult: 执行结果
         """
-        payload = {
-            "code": code,
-            "language": language,
-            "task_id": task_id,
-        }
-        url = f"{self.base_url}/execute"
+        payload = {"code": code, "language": language, "task_id": task_id}
         start_time = time.time()
 
         for attempt in range(self.max_retries + 1):
             try:
-                req = urllib.request.Request(
-                    url,
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json"},
-                    method="POST"
-                )
+                req = self._build_request(payload)
                 with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    elapsed_ms = int((time.time() - start_time) * 1000)
-                    return SandboxResult(
-                        success=data.get("status") == "ok",
-                        output=data.get("output", ""),
-                        error=data.get("error", ""),
-                        execution_time_ms=elapsed_ms,
-                        risk_score=data.get("risk_score", 0),
-                        backend=data.get("backend", ""),
-                        security_alert=data.get("security_alert", False),
-                    )
+                    return self._parse_success_response(data, start_time)
             except urllib.error.HTTPError as e:
                 if attempt < self.max_retries:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                elapsed_ms = int((time.time() - start_time) * 1000)
-                return SandboxResult(
-                    success=False,
-                    error=f"HTTP {e.code}: {e.reason}",
-                    execution_time_ms=elapsed_ms,
-                )
+                return self._build_error_result(f"HTTP {e.code}: {e.reason}", start_time)
             except Exception as e:
                 if attempt < self.max_retries:
                     time.sleep(0.5 * (attempt + 1))
                     continue
-                elapsed_ms = int((time.time() - start_time) * 1000)
-                return SandboxResult(
-                    success=False,
-                    error=f"Sandbox connection error: {str(e)}",
-                    execution_time_ms=elapsed_ms,
-                )
+                return self._build_error_result(f"Sandbox connection error: {str(e)}", start_time)
 
         return SandboxResult(success=False, error="Max retries exceeded")
 

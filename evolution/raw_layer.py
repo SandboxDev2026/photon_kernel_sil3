@@ -136,6 +136,50 @@ class RawLayer:
         if persist_path:
             self._load_from_file()
 
+    def _create_trajectory(self,
+                            skill_id: str,
+                            task: str,
+                            input_data: Optional[Dict[str, Any]],
+                            output_data: Optional[Dict[str, Any]],
+                            success: bool,
+                            error: str,
+                            error_type: str,
+                            tool_calls: Optional[List[Dict[str, Any]]],
+                            duration_ms: int,
+                            token_usage: Optional[Dict[str, int]],
+                            skill_name: str,
+                            skill_version: str,
+                            metadata: Optional[Dict[str, Any]]) -> RawTrajectory:
+        """创建原始轨迹对象"""
+        return RawTrajectory(
+            skill_id=skill_id,
+            skill_name=skill_name,
+            skill_version=skill_version,
+            task=task,
+            input_data=input_data or {},
+            output_data=output_data or {},
+            success=success,
+            error=error,
+            error_type=error_type,
+            tool_calls=tool_calls or [],
+            duration_ms=duration_ms,
+            token_usage=token_usage or {},
+            metadata=metadata or {},
+        )
+
+    def _manage_storage(self, trajectory: RawTrajectory) -> None:
+        """管理存储（添加、淘汰旧的、持久化）"""
+        self._trajectories.append(trajectory)
+        self._total_recorded += 1
+
+        # 超过最大数量，淘汰最旧的
+        if len(self._trajectories) > self._max_trajectories:
+            self._trajectories = self._trajectories[-self._max_trajectories:]
+
+        # 持久化
+        if self._persist_path:
+            self._save_to_file()
+
     def record(self,
                skill_id: str,
                task: str,
@@ -151,7 +195,7 @@ class RawLayer:
                skill_version: str = "",
                metadata: Optional[Dict[str, Any]] = None) -> RawTrajectory:
         """
-        记录一条原始执行轨迹（append-only）
+        记录一条原始执行轨迹（append-only，优化版：拆分为2个子函数）
 
         Args:
             skill_id: Skill ID
@@ -171,32 +215,15 @@ class RawLayer:
         Returns:
             创建的 RawTrajectory 对象
         """
-        trajectory = RawTrajectory(
-            skill_id=skill_id,
-            skill_name=skill_name,
-            skill_version=skill_version,
-            task=task,
-            input_data=input_data or {},
-            output_data=output_data or {},
-            success=success,
-            error=error,
-            error_type=error_type,
-            tool_calls=tool_calls or [],
-            duration_ms=duration_ms,
-            token_usage=token_usage or {},
-            metadata=metadata or {},
+        # 1. 创建轨迹对象
+        trajectory = self._create_trajectory(
+            skill_id, task, input_data, output_data, success, error,
+            error_type, tool_calls, duration_ms, token_usage,
+            skill_name, skill_version, metadata
         )
 
-        self._trajectories.append(trajectory)
-        self._total_recorded += 1
-
-        # 超过最大数量，淘汰最旧的
-        if len(self._trajectories) > self._max_trajectories:
-            self._trajectories = self._trajectories[-self._max_trajectories:]
-
-        # 持久化
-        if self._persist_path:
-            self._save_to_file()
+        # 2. 管理存储（添加、淘汰、持久化）
+        self._manage_storage(trajectory)
 
         return trajectory
 
