@@ -80,6 +80,22 @@ class WikiPattern:
     tags: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    # 类变量：标签映射（避免每次调用都重新创建字典）
+    _STATUS_EMOJI = {"active": "🔴", "resolved": "🟢", "deprecated": "⚪"}
+    _TYPE_LABELS = {
+        "failure_pattern": "失败模式",
+        "success_pattern": "成功策略",
+        "best_practice": "最佳实践",
+        "anti_pattern": "反模式",
+        "lesson_learned": "经验教训",
+    }
+    _SEVERITY_LABELS = {
+        "critical": "🔴 严重",
+        "high": "🟠 高",
+        "medium": "🟡 中",
+        "low": "🟢 低",
+    }
+
     def to_dict(self) -> dict:
         d = asdict(self)
         d["pattern_type"] = self.pattern_type.value
@@ -87,27 +103,16 @@ class WikiPattern:
         return d
 
     def to_markdown(self) -> str:
-        """转换为 Markdown 格式（对应 patterns/ 目录下的文件）"""
-        status_emoji = {"active": "🔴", "resolved": "🟢", "deprecated": "⚪"}.get(self.status, "⚪")
-        type_labels = {
-            "failure_pattern": "失败模式",
-            "success_pattern": "成功策略",
-            "best_practice": "最佳实践",
-            "anti_pattern": "反模式",
-            "lesson_learned": "经验教训",
-        }
-        severity_labels = {
-            "critical": "🔴 严重",
-            "high": "🟠 高",
-            "medium": "🟡 中",
-            "low": "🟢 低",
-        }
+        """转换为 Markdown 格式（优化版：标签映射提取为类变量）"""
+        status_emoji = self._STATUS_EMOJI.get(self.status, "⚪")
+        type_label = self._TYPE_LABELS.get(self.pattern_type.value, self.pattern_type.value)
+        severity_label = self._SEVERITY_LABELS.get(self.severity.value, self.severity.value)
 
         md = f"""# {self.title}
 
 **模式ID**: {self.pattern_id}
-**类型**: {type_labels.get(self.pattern_type.value, self.pattern_type.value)}
-**严重程度**: {severity_labels.get(self.severity.value, self.severity.value)}
+**类型**: {type_label}
+**严重程度**: {severity_label}
 **状态**: {status_emoji} {self.status}
 **发生次数**: {self.occurrence_count}
 **首次发现**: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.first_seen))}

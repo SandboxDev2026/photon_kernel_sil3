@@ -463,12 +463,39 @@ class M2DetectionGateway:
             reasons.append(f"风险分数 {risk_score:.2f} 在安全范围内")
             return FilterDecision.ALLOW, reasons
 
+    def _build_filter_result(self,
+                               decision: FilterDecision,
+                               risk_level: RiskLevel,
+                               risk_score: float,
+                               momentum: SemanticMomentum,
+                               features: List[SemanticFeature],
+                               reasons: List[str],
+                               code_hash: str,
+                               code: str,
+                               processing_time_ms: int,
+                               tenant_id: str,
+                               sandbox_type: str) -> M2FilterResult:
+        """构造过滤结果对象"""
+        return M2FilterResult(
+            decision=decision,
+            risk_level=risk_level,
+            risk_score=risk_score,
+            momentum=momentum,
+            features=features,
+            reasons=reasons,
+            code_hash=code_hash,
+            code_length=len(code),
+            processing_time_ms=processing_time_ms,
+            tenant_id=tenant_id,
+            sandbox_type=sandbox_type,
+        )
+
     def analyze_and_filter(self,
                            code: str,
                            tenant_id: str = "",
                            sandbox_type: str = "") -> M2FilterResult:
         """
-        分析代码并做出过滤决策（完整流程）
+        分析代码并做出过滤决策（完整流程）（优化版：拆分结果构造）
 
         Args:
             code: 待分析的代码
@@ -501,18 +528,9 @@ class M2DetectionGateway:
 
         # 7. 构造结果
         processing_time_ms = int((time.time() - start_time) * 1000)
-        result = M2FilterResult(
-            decision=decision,
-            risk_level=risk_level,
-            risk_score=risk_score,
-            momentum=momentum,
-            features=features,
-            reasons=reasons,
-            code_hash=code_hash,
-            code_length=len(code),
-            processing_time_ms=processing_time_ms,
-            tenant_id=tenant_id,
-            sandbox_type=sandbox_type,
+        result = self._build_filter_result(
+            decision, risk_level, risk_score, momentum, features, reasons,
+            code_hash, code, processing_time_ms, tenant_id, sandbox_type
         )
 
         # 8. 记录审计日志
