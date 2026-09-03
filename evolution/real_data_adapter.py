@@ -275,57 +275,84 @@ class KvmVmExitParser:
             "qualification": "..."
         }
         """
+        # 1. 提取VM-Exit字段
+        fields = self._extract_vm_exit_fields(data)
+        if not fields:
+            return None
+
+        # 2. 分类退出风险
+        severity, is_high_risk = self._classify_exit_risk(fields["exit_reason"])
+
+        # 3. 构建安全事件
+        return self._build_vm_exit_event(data, fields, severity, is_high_risk)
+
+
+    def _extract_vm_exit_fields(self, data: Dict) -> Optional[Dict]:
+        """提取VM-Exit事件字段"""
         exit_reason = data.get("exit_reason", data.get("reason", "UNKNOWN"))
         vm_id = data.get("vm_id", data.get("sandbox_id", "unknown"))
+        exit_count = int(data.get("exit_count", 1))
         timestamp = float(data.get("timestamp", time.time()))
+        vcpu_id = data.get("vcpu_id", 0)
+        guest_rip = data.get("guest_rip", "")
+        qualification = data.get("qualification", "")
 
-        # 判断风险等级
-        severity = "low"
-        if exit_reason in self.HIGH_RISK_EXIT_REASONS:
-            severity = "high"
-        elif exit_reason in self.SUSPICIOUS_EXIT_REASONS:
-            severity = "medium"
+        if exit_reason == "UNKNOWN":
+            return None
 
-        # 检查是否为异常模式（短时间内大量相同exit_reason）
-        anomaly_score = 0.0
-        anomaly_type = None
-
-        history = self.vm_exit_history[vm_id]
-        recent_exits = [e for e in history if timestamp - e["timestamp"] < 1.0]
-        same_reason_recent = sum(1 for e in recent_exits if e["exit_reason"] == exit_reason)
-
-        if same_reason_recent > 100:  # 1秒内超过100次相同exit
-            anomaly_type = AnomalyType.FREQUENCY_SPIKE
-            anomaly_score = min(1.0, same_reason_recent / 1000.0)
-            severity = "critical" if severity in ["low", "medium"] else severity
-
-        event = SecurityEvent(
-            event_id=data.get("event_id", hashlib.md5(json.dumps(data).encode(), usedforsecurity=False).hexdigest()[:16]),
-            source=EventSource.KVM_VM_EXIT,
-            timestamp=timestamp,
-            sandbox_id=str(vm_id),
-            severity=severity,
-            description=f"KVM VM-Exit: reason={exit_reason}, vm={vm_id}, count={same_reason_recent}/s",
-            payload={
-                "exit_reason": exit_reason,
-                "vcpu_id": data.get("vcpu_id"),
-                "guest_rip": data.get("guest_rip"),
-                "qualification": data.get("qualification"),
-                "exit_rate_per_second": same_reason_recent,
-            },
-            raw_event=data,
-            anomaly_type=anomaly_type,
-            anomaly_score=anomaly_score,
-        )
-
-        self.parsed_events.append(event)
-        self.exit_reason_counts[exit_reason] += 1
-        self.vm_exit_history[vm_id].append({
-            "timestamp": timestamp,
+        return {
             "exit_reason": exit_reason,
-        })
+            "vm_id": vm_id,
+            "exit_count": exit_count,
+            "timestamp": timestamp,
+            "vcpu_id": vcpu_id,
+            "guest_rip": guest_rip,
+            "qualification": qualification,
+        }
 
-        return event
+    def _classify_exit_risk(self, exit_reason: str) -> Tuple[str, bool]:
+        """分类VM-Exit风险等级"""
+        high_risk_exits = {
+            "VMCALL", "VMMCALL", "CPUID", "RDMSR", "WRMSR",
+            "XSETBV", "INVD", "WBINVD", "HLT", "PAUSE",
+        }
+        medium_risk_exits = {
+            "IO_INSTRUCTION", "MMIO", "EPT_VIOLATION", "PAGE_FAULT",
+        }
+
+        if exit_reason in high_risk_exits:
+            return "high", True
+        elif exit_reason in medium_risk_exits:
+            return "medium", False
+        return "low", False
+
+    def _build_vm_exit_event(
+        self, data: Dict, fields: Dict, severity: str, is_high_risk: bool
+    ) -> SecurityEvent:
+        """构建VM-Exit安全事件"""
+        anomaly_type = "vm_exit_high_risk" if is_high_risk else None
+        description = f"VM-Exit: {fields['exit_reason']} (count={fields['exit_count']}, vcpu={fields['vcpu_id']})"
+
+        if is_high_risk:
+            description += " [高风险退出，可能是逃逸尝试]"
+
+        return SecurityEvent(
+            event_id=data.get("event_id", f"vmexit-{int(time.time()*1000)}"),
+            source=EventSource.KVM_VM_EXIT,
+            timestamp=fields["timestamp"],
+            sandbox_id=fields["vm_id"],
+            severity=severity,
+            description=description,
+            anomaly_type=anomaly_type,
+            payload={
+                "exit_reason": fields["exit_reason"],
+                "exit_count": fields["exit_count"],
+                "vcpu_id": fields["vcpu_id"],
+                "guest_rip": fields["guest_rip"],
+                "qualification": fields["qualification"],
+                "is_high_risk": is_high_risk,
+            },
+        )
 
     def get_top_exit_reasons(self, n: int = 10) -> List[Tuple[str, int]]:
         """获取Top-N VM-Exit原因"""
