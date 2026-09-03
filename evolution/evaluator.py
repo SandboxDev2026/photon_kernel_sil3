@@ -56,6 +56,115 @@ class BaseEvaluator(ABC):
         """
         pass
 
+    def _run_all_tests(self, code: str) -> Tuple[int, List[str], List[str], int]:
+        """运行所有测试用例，返回(通过数,失败用例,安全告警,总耗时ms)"""
+        test_cases = self.get_test_cases()
+        test_pass = 0
+        fail_cases = []
+        security_alerts = []
+        total_time_ms = 0
+
+        for i, tc in enumerate(test_cases):
+            start = time.time()
+            passed, output, error, sec_alert = self.run_single_test(code, tc)
+            elapsed_ms = int((time.time() - start) * 1000)
+            total_time_ms += elapsed_ms
+
+            if passed:
+                test_pass += 1
+            else:
+                fail_cases.append(f"test_{i}: {error or output[:200]}")
+
+            if sec_alert:
+                security_alerts.append(f"test_{i}: security violation")
+
+            # 超时检测
+            if elapsed_ms > self.timeout_ms:
+                fail_cases.append(f"test_{i}: timeout ({elapsed_ms}ms > {self.timeout_ms}ms)")
+
+        return test_pass, fail_cases, security_alerts, total_time_ms
+
+    def _calculate_fitness(self,
+                            test_pass: int,
+                            test_total: int,
+                            fail_cases: List[str],
+                            security_alerts: List[str]) -> float:
+        """计算适应度（含安全惩罚和超时惩罚）"""
+        base_fitness = test_pass / test_total if test_total > 0 else 0.0
+
+        # 安全惩罚：任何安全告警大幅降低分数
+        security_penalty = min(1.0, len(security_alerts) * self.security_penalty_weight)
+
+        # 超时惩罚
+        timeout_count = sum(1 for fc in fail_cases if "timeout" in fc)
+        timeout_penalty = min(0.5, timeout_count * 0.1)
+
+        final_fitness = base_fitness * (1.0 - security_penalty) - timeout_penalty
+        return max(0.0, min(1.0, final_fitness))
+
+    def _update_individual(self,
+                            ind: Individual,
+                            fitness: float,
+                            test_pass: int,
+                            test_total: int,
+                            fail_cases: List[str],
+                            security_alerts: List[str]):
+        """更新个体评估状态"""
+        ind.fitness = fitness
+        ind.test_pass = test_pass
+        ind.test_total = test_total
+        ind.fail_cases = fail_cases
+        ind.security_alerts = security_alerts
+        ind.sandbox_violations = len(security_alerts)
+        ind.evaluated = True
+
+    def evaluate(self, ind: Individual) -> EvaluationResult:
+        """
+        评估个体（全部通过沙盒执行，禁止本地exec）（优化版：拆分为子函数）
+
+        适应度计算：
+        base_fitness = test_pass / test_total
+        security_penalty = security_alerts * penalty_weight
+        timeout_penalty = timeout_count * 0.1
+        final_fitness = base_fitness * (1 - security_penalty) - timeout_penalty
+        """
+        code = ind.payload.get("code", "")
+        if not code:
+            return EvaluationResult(fitness=0.0, fail_cases=["empty code"])
+
+        # 1. 运行所有测试用例
+        test_pass, fail_cases, security_alerts, total_time_ms = self._run_all_tests(code)
+        test_total = len(self.get_test_cases())
+
+        # 2. 计算适应度（含安全惩罚）
+        final_fitness = self._calculate_fitness(test_pass, test_total, fail_cases, security_alerts)
+
+        # 3. 更新个体状态
+        self._update_individual(ind, final_fitness, test_pass, test_total, fail_cases, security_alerts)
+
+        return EvaluationResult(
+            fitness=final_fitness,
+            test_pass=test_pass,
+            test_total=test_total,
+            fail_cases=fail_cases,
+            security_alerts=security_alerts,
+            execution_time_ms=total_time_ms,
+        )
+
+    def get_test_cases(self) -> List[Dict[str, Any]]:
+        """获取测试用例列表"""
+        pass
+
+    @abstractmethod
+    def run_single_test(self, code: str, test_case: Dict[str, Any]) -> tuple:
+        """
+        运行单个测试用例（通过沙盒执行）
+
+        Returns:
+            (passed: bool, output: str, error: str, security_alert: bool)
+        """
+        pass
+
     def evaluate(self, ind: Individual) -> EvaluationResult:
         """
         评估个体（全部通过沙盒执行，禁止本地exec）

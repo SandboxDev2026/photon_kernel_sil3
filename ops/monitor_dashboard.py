@@ -108,8 +108,8 @@ class MonitorDashboard:
             return "warning"
         return "healthy"
 
-    def _render_css(self) -> str:
-        """渲染CSS样式"""
+    def _render_base_css(self) -> str:
+        """渲染基础CSS样式（reset + body）"""
         return """
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
@@ -118,6 +118,19 @@ class MonitorDashboard:
             color: #e0e6f0;
             min-height: 100vh;
         }}
+        .footer {{
+            text-align: center;
+            padding: 20px;
+            color: #4b5563;
+            font-size: 12px;
+            border-top: 1px solid #1f2937;
+        }}
+        .full-width {{ grid-column: 1 / -1; }}
+        """
+
+    def _render_header_css(self) -> str:
+        """渲染头部CSS样式（header + health-status + alert-summary）"""
+        return """
         .header {{
             background: linear-gradient(135deg, #0d1526 0%, #1a2744 100%);
             padding: 20px 40px;
@@ -159,6 +172,11 @@ class MonitorDashboard:
         .alert-critical {{ background: rgba(255,68,68,0.2); color: #ff4444; }}
         .alert-warning {{ background: rgba(255,170,0,0.2); color: #ffaa00; }}
         .alert-info {{ background: rgba(68,170,255,0.2); color: #44aaff; }}
+        """
+
+    def _render_metrics_css(self) -> str:
+        """渲染指标面板CSS样式（main + panel + metric-grid + metric-card）"""
+        return """
         .main {{
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -193,6 +211,11 @@ class MonitorDashboard:
         .metric-name {{ font-size: 12px; color: #6b7280; margin-bottom: 8px; }}
         .metric-value {{ font-size: 24px; font-weight: bold; color: #00ff88; }}
         .metric-unit {{ font-size: 12px; color: #6b7280; }}
+        """
+
+    def _render_alerts_css(self) -> str:
+        """渲染告警和节点CSS样式（alert-list + alert-item + node-list + threshold-info）"""
+        return """
         .alert-list {{ max-height: 400px; overflow-y: auto; }}
         .alert-item {{
             padding: 10px;
@@ -234,15 +257,16 @@ class MonitorDashboard:
         .threshold-info h4 {{ color: #ffaa00; margin-bottom: 8px; }}
         .threshold-info ul {{ list-style: none; }}
         .threshold-info li {{ padding: 4px 0; }}
-        .footer {{
-            text-align: center;
-            padding: 20px;
-            color: #4b5563;
-            font-size: 12px;
-            border-top: 1px solid #1f2937;
-        }}
-        .full-width {{ grid-column: 1 / -1; }}
         """
+
+    def _render_css(self) -> str:
+        """渲染CSS样式（优化版：拆分为4个子函数组合）"""
+        return (
+            self._render_base_css() +
+            self._render_header_css() +
+            self._render_metrics_css() +
+            self._render_alerts_css()
+        )
 
     def _render_header(self, health_color: str, health_text: str, alert_summary: Dict[str, int]) -> str:
         """渲染头部"""
