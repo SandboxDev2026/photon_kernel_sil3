@@ -212,69 +212,84 @@ class SecureEventPipeline:
             部署结果
         """
         with self._lock:
-            # 1. 持久化规则(生成版本+状态管理)
-            version = self.rule_persistence.deploy_rule(
-                rule_id=rule_id,
-                config=config,
-                deployed_by=deployed_by,
-            )
-            self._stats.total_rules_generated += 1
-
-            # 2. 检查是否已熔断
-            if self.rule_persistence.is_circuit_broken(rule_id):
-                self._stats.total_circuit_breaks += 1
-                return {
-                    "success": False,
-                    "rule_id": rule_id,
-                    "reason": "rule_circuit_broken",
-                    "version_id": version.version_id,
-                }
-
-            # 3. 部署到执行层
-            config_update = ConfigUpdate(
-                update_id=f"{rule_id}-{int(time.time())}",
-                target=self._parse_config_target(target),
-                action=ChangeAction.ADD,
-                description=f"Deploy defense rule: {rule_id}",
-                config_key=rule_id,
-                config_value=config,
-                priority="high",
-                reason=f"Deployed by {deployed_by}",
-                defense_rule_id=rule_id,
-            )
-            exec_result = self.rule_executor.execute_update(config_update)
-            deploy_result = {
-                "success": exec_result.status == ExecutionStatus.SUCCESS,
-                "error": exec_result.error,
-                "update_id": exec_result.update_id,
-                "status": exec_result.status.value,
-            }
-
-            if deploy_result.get("success"):
-                self._stats.total_rules_deployed += 1
-                # 记录规则触发(成功部署)
-                self.rule_persistence.record_trigger(rule_id, blocked=True)
-            else:
-                # 部署失败,记录失败(可能触发熔断)
-                broken = self.rule_persistence.record_failure(
-                    rule_id, reason=deploy_result.get("error", "deploy_failed")
-                )
-                if broken:
-                    self._stats.total_circuit_breaks += 1
-                    # 自动回滚
-                    rolled_back = self.rule_persistence.rollback_rule(rule_id)
-                    if rolled_back:
-                        self._stats.total_rollbacks += 1
-
+            version = self._persist_rule_version(rule_id, config, deployed_by)
+            if self._is_rule_circuit_broken(rule_id):
+                return self._build_circuit_broken_response(rule_id, version)
+            deploy_result = self._deploy_rule_to_executor(rule_id, config, deployed_by, target)
+            self._handle_deploy_outcome(rule_id, deploy_result)
             self._maybe_persist()
-            return {
-                "success": deploy_result.get("success", False),
-                "rule_id": rule_id,
-                "version_id": version.version_id,
-                "rule_state": version.state.value,
-                "circuit_state": version.circuit_state.value,
-                "deploy_result": deploy_result,
-            }
+            return self._build_deploy_response(rule_id, version, deploy_result)
+
+    def _persist_rule_version(self, rule_id, config, deployed_by):
+        """持久化规则版本"""
+        version = self.rule_persistence.deploy_rule(
+            rule_id=rule_id, config=config, deployed_by=deployed_by,
+        )
+        self._stats.total_rules_generated += 1
+        return version
+
+    def _is_rule_circuit_broken(self, rule_id):
+        """检查规则是否已熔断"""
+        if self.rule_persistence.is_circuit_broken(rule_id):
+            self._stats.total_circuit_breaks += 1
+            return True
+        return False
+
+    def _build_circuit_broken_response(self, rule_id, version):
+        """构建熔断响应"""
+        return {
+            "success": False,
+            "rule_id": rule_id,
+            "reason": "rule_circuit_broken",
+            "version_id": version.version_id,
+        }
+
+    def _deploy_rule_to_executor(self, rule_id, config, deployed_by, target):
+        """部署规则到执行层"""
+        config_update = ConfigUpdate(
+            update_id=f"{rule_id}-{int(time.time())}",
+            target=self._parse_config_target(target),
+            action=ChangeAction.ADD,
+            description=f"Deploy defense rule: {rule_id}",
+            config_key=rule_id,
+            config_value=config,
+            priority="high",
+            reason=f"Deployed by {deployed_by}",
+            defense_rule_id=rule_id,
+        )
+        exec_result = self.rule_executor.execute_update(config_update)
+        return {
+            "success": exec_result.status == ExecutionStatus.SUCCESS,
+            "error": exec_result.error,
+            "update_id": exec_result.update_id,
+            "status": exec_result.status.value,
+        }
+
+    def _handle_deploy_outcome(self, rule_id, deploy_result):
+        """处理部署结果(成功/失败/熔断/回滚)"""
+        if deploy_result.get("success"):
+            self._stats.total_rules_deployed += 1
+            self.rule_persistence.record_trigger(rule_id, blocked=True)
+        else:
+            broken = self.rule_persistence.record_failure(
+                rule_id, reason=deploy_result.get("error", "deploy_failed")
+            )
+            if broken:
+                self._stats.total_circuit_breaks += 1
+                rolled_back = self.rule_persistence.rollback_rule(rule_id)
+                if rolled_back:
+                    self._stats.total_rollbacks += 1
+
+    def _build_deploy_response(self, rule_id, version, deploy_result):
+        """构建部署响应"""
+        return {
+            "success": deploy_result.get("success", False),
+            "rule_id": rule_id,
+            "version_id": version.version_id,
+            "rule_state": version.state.value,
+            "circuit_state": version.circuit_state.value,
+            "deploy_result": deploy_result,
+        }
 
     def _parse_config_target(self, target):
         """解析配置目标(支持大小写)"""

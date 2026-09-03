@@ -201,67 +201,82 @@ class WebhookAlertSender:
         return self._send_with_retry(payload)
 
     def _build_payload(self, alert: Alert) -> Dict[str, Any]:
-        """根据格式构建payload"""
+        """根据格式构建payload(分发到各格式子函数)"""
         fmt = self.config.format.lower()
+        builders = {
+            'dingtalk': self._build_dingtalk_payload,
+            'wecom': self._build_wecom_payload,
+            'slack': self._build_slack_payload,
+            'alertmanager': self._build_alertmanager_payload,
+        }
+        builder = builders.get(fmt, self._build_generic_payload)
+        return builder(alert)
 
-        if fmt == 'dingtalk':
-            return {
-                "msgtype": "markdown",
-                "markdown": {
-                    "title": f"[PhotonBox] {alert.title}",
-                    "text": f"### {alert.title}\n\n"
-                            f"**严重等级**: {alert.severity.value}\n\n"
-                            f"**规则ID**: {alert.rule_id or 'N/A'}\n\n"
-                            f"**描述**: {alert.description}\n\n"
-                            f"**时间**: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(alert.created_at))}",
-                },
-            }
-        elif fmt == 'wecom':
-            return {
-                "msgtype": "markdown",
-                "markdown": {
-                    "content": f"## [PhotonBox] {alert.title}\n"
-                               f"> 严重等级: <font color=\"warning\">{alert.severity.value}</font>\n"
-                               f"> 规则ID: {alert.rule_id or 'N/A'}\n"
-                               f"> 描述: {alert.description}",
-                },
-            }
-        elif fmt == 'slack':
-            color = {
-                'critical': '#FF0000',
-                'high': '#FFA500',
-                'warning': '#FFFF00',
-                'info': '#00FF00',
-            }.get(alert.severity.value, '#CCCCCC')
-            return {
-                "attachments": [{
-                    "color": color,
-                    "title": f"[PhotonBox] {alert.title}",
-                    "text": alert.description,
-                    "fields": [
-                        {"title": "Severity", "value": alert.severity.value, "short": True},
-                        {"title": "Rule ID", "value": alert.rule_id or 'N/A', "short": True},
-                    ],
-                    "ts": alert.created_at,
-                }],
-            }
-        elif fmt == 'alertmanager':
-            return {
-                "status": "firing",
-                "labels": {
-                    "alertname": alert.alert_type,
-                    "severity": alert.severity.value,
-                    "rule_id": alert.rule_id or '',
-                    "source": alert.source,
-                },
-                "annotations": {
-                    "title": alert.title,
-                    "description": alert.description,
-                },
-                "startsAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(alert.created_at)),
-            }
-        else:  # generic
-            return alert.to_dict()
+    def _build_dingtalk_payload(self, alert):
+        """构建钉钉格式payload"""
+        return {
+            "msgtype": "markdown",
+            "markdown": {
+                "title": f"[PhotonBox] {alert.title}",
+                "text": f"### {alert.title}\n\n"
+                        f"**严重等级**: {alert.severity.value}\n\n"
+                        f"**规则ID**: {alert.rule_id or 'N/A'}\n\n"
+                        f"**描述**: {alert.description}\n\n"
+                        f"**时间**: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(alert.created_at))}",
+            },
+        }
+
+    def _build_wecom_payload(self, alert):
+        """构建企业微信格式payload"""
+        return {
+            "msgtype": "markdown",
+            "markdown": {
+                "content": f"## [PhotonBox] {alert.title}\n"
+                           f"> 严重等级: <font color=\"warning\">{alert.severity.value}</font>\n"
+                           f"> 规则ID: {alert.rule_id or 'N/A'}\n"
+                           f"> 描述: {alert.description}",
+            },
+        }
+
+    def _build_slack_payload(self, alert):
+        """构建Slack格式payload"""
+        color = {
+            'critical': '#FF0000', 'high': '#FFA500',
+            'warning': '#FFFF00', 'info': '#00FF00',
+        }.get(alert.severity.value, '#CCCCCC')
+        return {
+            "attachments": [{
+                "color": color,
+                "title": f"[PhotonBox] {alert.title}",
+                "text": alert.description,
+                "fields": [
+                    {"title": "Severity", "value": alert.severity.value, "short": True},
+                    {"title": "Rule ID", "value": alert.rule_id or 'N/A', "short": True},
+                ],
+                "ts": alert.created_at,
+            }],
+        }
+
+    def _build_alertmanager_payload(self, alert):
+        """构建Alertmanager格式payload"""
+        return {
+            "status": "firing",
+            "labels": {
+                "alertname": alert.alert_type,
+                "severity": alert.severity.value,
+                "rule_id": alert.rule_id or '',
+                "source": alert.source,
+            },
+            "annotations": {
+                "title": alert.title,
+                "description": alert.description,
+            },
+            "startsAt": time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(alert.created_at)),
+        }
+
+    def _build_generic_payload(self, alert):
+        """构建通用格式payload"""
+        return alert.to_dict()
 
     def _send_with_retry(self, payload: Dict[str, Any]) -> bool:
         """带重试的发送"""
