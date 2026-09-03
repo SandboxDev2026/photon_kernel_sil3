@@ -16,7 +16,7 @@
 
 import time
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional, Callable, Any
+from typing import List, Tuple, Optional, Callable, Any, Dict
 
 from .rule_based_evaluator import RuleBasedEvaluator, RuleScore
 from .individual import Individual
@@ -85,12 +85,86 @@ class TwoStageEvaluator:
         # 统计
         self.stats = TwoStageStats()
 
+    def _evaluate_stage1(self, population: List[Individual]) -> List[Tuple[Individual, Any]]:
+        """第一阶段：规则快速评估"""
+        stage1_start = time.time()
+        stage1_results = []
+
+        for ind in population:
+            code = self._extract_code(ind)
+            score = self.rule_evaluator.evaluate(code, self.language)
+            stage1_results.append((ind, score))
+
+            # 记录扣分项（用于统计）
+            if score.penalties:
+                self.stats.stage1_penalties.extend(score.penalties[:3])
+
+        stage1_time = (time.time() - stage1_start) * 1000
+        self.stats.stage1_avg_time_ms = stage1_time / len(population) if population else 0
+
+        return stage1_results
+
+    def _evaluate_stage2(self,
+                          passed_stage1: List[Tuple[Individual, Any]],
+                          top_n: int,
+                          deep_eval_fn: Optional[Callable[[Individual], float]]
+                          ) -> Dict[str, float]:
+        """第二阶段：LLM/沙盒深度评估"""
+        stage2_scores = {}  # ind.id -> stage2_score
+        if deep_eval_fn is None or top_n <= 0:
+            return stage2_scores
+
+        stage2_start = time.time()
+
+        for i in range(top_n):
+            ind, _ = passed_stage1[i]
+            try:
+                s2_score = deep_eval_fn(ind)
+                stage2_scores[ind.id] = max(0.0, min(100.0, s2_score))
+            except Exception as e:
+                # 深度评估失败，使用第一阶段分数
+                stage2_scores[ind.id] = passed_stage1[i][1].total * 0.5
+
+        stage2_time = (time.time() - stage2_start) * 1000
+        self.stats.stage2_avg_time_ms = stage2_time / top_n if top_n > 0 else 0
+        self.stats.stage2_evaluated = top_n
+
+        # 计算成本节省
+        if self.stats.stage2_avg_time_ms > 0:
+            full_cost = self.stats.total_individuals * self.stats.stage2_avg_time_ms
+            actual_cost = (self.stats.total_individuals * self.stats.stage1_avg_time_ms +
+                           top_n * self.stats.stage2_avg_time_ms)
+            self.stats.cost_saved_pct = max(0.0, (1 - actual_cost / full_cost) * 100)
+
+        return stage2_scores
+
+    def _calculate_final_scores(self,
+                                  stage1_results: List[Tuple[Individual, Any]],
+                                  stage2_scores: Dict[str, float]
+                                  ) -> List[Tuple[Individual, float, bool]]:
+        """计算最终得分"""
+        results = []
+        stage2_ids = set(stage2_scores.keys())
+
+        for ind, s1 in stage1_results:
+            if ind.id in stage2_ids:
+                # 进入第二阶段：加权综合
+                s2 = stage2_scores[ind.id]
+                final_score = s1.total * self.stage1_weight + s2 * self.stage2_weight
+                results.append((ind, final_score, True))
+            else:
+                # 第一阶段淘汰：使用第一阶段分数（打折）
+                final_score = s1.total * 0.5  # 淘汰个体分数打折
+                results.append((ind, final_score, False))
+
+        return results
+
     def evaluate(self,
                  population: List[Individual],
                  deep_eval_fn: Optional[Callable[[Individual], float]] = None
                  ) -> List[Tuple[Individual, float, bool]]:
         """
-        执行两阶段评估
+        执行两阶段评估（优化版：拆分为子函数）
 
         Args:
             population: 个体列表
@@ -108,20 +182,7 @@ class TwoStageEvaluator:
             return []
 
         # ===== 第一阶段：规则快速评估 =====
-        stage1_start = time.time()
-        stage1_results = []
-
-        for ind in population:
-            code = self._extract_code(ind)
-            score = self.rule_evaluator.evaluate(code, self.language)
-            stage1_results.append((ind, score))
-
-            # 记录扣分项（用于统计）
-            if score.penalties:
-                self.stats.stage1_penalties.extend(score.penalties[:3])
-
-        stage1_time = (time.time() - stage1_start) * 1000
-        self.stats.stage1_avg_time_ms = stage1_time / len(population) if population else 0
+        stage1_results = self._evaluate_stage1(population)
 
         # 筛选通过第一阶段的个体
         passed_stage1 = [(ind, s) for ind, s in stage1_results if s.passed]
@@ -136,46 +197,10 @@ class TwoStageEvaluator:
         top_n = min(top_n, len(passed_stage1))  # 不超过通过数
 
         # ===== 第二阶段：LLM/沙盒深度评估 =====
-        stage2_scores = {}  # ind.id -> stage2_score
-        if deep_eval_fn is not None and top_n > 0:
-            stage2_start = time.time()
-
-            for i in range(top_n):
-                ind, _ = passed_stage1[i]
-                try:
-                    s2_score = deep_eval_fn(ind)
-                    stage2_scores[ind.id] = max(0.0, min(100.0, s2_score))
-                except Exception as e:
-                    # 深度评估失败，使用第一阶段分数
-                    stage2_scores[ind.id] = passed_stage1[i][1].total * 0.5
-
-            stage2_time = (time.time() - stage2_start) * 1000
-            self.stats.stage2_avg_time_ms = stage2_time / top_n if top_n > 0 else 0
-            self.stats.stage2_evaluated = top_n
-
-            # 计算成本节省
-            if self.stats.stage2_avg_time_ms > 0:
-                full_cost = len(population) * self.stats.stage2_avg_time_ms
-                actual_cost = (len(population) * self.stats.stage1_avg_time_ms +
-                               top_n * self.stats.stage2_avg_time_ms)
-                self.stats.cost_saved_pct = max(0.0, (1 - actual_cost / full_cost) * 100)
+        stage2_scores = self._evaluate_stage2(passed_stage1, top_n, deep_eval_fn)
 
         # ===== 计算最终得分 =====
-        results = []
-        stage2_ids = set(stage2_scores.keys())
-
-        for ind, s1 in stage1_results:
-            if ind.id in stage2_scores:
-                # 进入第二阶段：加权综合
-                s2 = stage2_scores[ind.id]
-                final_score = s1.total * self.stage1_weight + s2 * self.stage2_weight
-                results.append((ind, final_score, True))
-            else:
-                # 第一阶段淘汰：使用第一阶段分数（打折）
-                final_score = s1.total * 0.5  # 淘汰个体分数打折
-                results.append((ind, final_score, False))
-
-        return results
+        return self._calculate_final_scores(stage1_results, stage2_scores)
 
     def get_stats(self) -> TwoStageStats:
         """获取评估统计"""

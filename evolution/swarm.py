@@ -216,9 +216,62 @@ class JiuwenSwarm:
         self.task_queue.append({"task_id": task_id, "content": task_content})
         return task_id
 
+    def _assign_employed_bees(self, employed: List, task_idx: int) -> Tuple[List, int]:
+        """雇佣蜂：按适应度优先分配任务"""
+        assignments = []
+        for agent in employed:
+            if task_idx >= len(self.task_queue):
+                break
+            task = self.task_queue[task_idx]
+            assignment = TaskAssignment(
+                task_id=task["task_id"],
+                task_content=task["content"],
+                agent_id=agent.agent_id,
+            )
+            assignments.append(assignment)
+            task_idx += 1
+        return assignments, task_idx
+
+    def _assign_onlooker_bees(self, onlookers: List, employed: List, task_idx: int) -> Tuple[List, int]:
+        """观察蜂：跟随优秀雇佣蜂（选择相同类型的任务）"""
+        assignments = []
+        for agent in onlookers:
+            if task_idx >= len(self.task_queue):
+                break
+            # 观察蜂选择适应度最高的雇佣蜂正在处理的任务类型
+            if employed:
+                best_employed = max(employed, key=lambda a: a.fitness)
+                # 简化：分配下一个任务
+                task = self.task_queue[task_idx]
+                assignment = TaskAssignment(
+                    task_id=task["task_id"],
+                    task_content=task["content"],
+                    agent_id=agent.agent_id,
+                )
+                assignments.append(assignment)
+                task_idx += 1
+        return assignments, task_idx
+
+    def _assign_scout_bees(self, scouts: List, task_idx: int) -> Tuple[List, int]:
+        """侦察蜂：随机分配任务（探索）"""
+        assignments = []
+        for agent in scouts:
+            if task_idx >= len(self.task_queue):
+                break
+            task = random.choice(self.task_queue[task_idx:]) if task_idx < len(self.task_queue) else None
+            if task:
+                assignment = TaskAssignment(
+                    task_id=task["task_id"],
+                    task_content=task["content"],
+                    agent_id=agent.agent_id,
+                )
+                assignments.append(assignment)
+                task_idx += 1
+        return assignments, task_idx
+
     def assign_tasks(self) -> List[TaskAssignment]:
         """
-        分配任务给 Agent（蜂群算法的雇佣蜂+观察蜂阶段）
+        分配任务给 Agent（蜂群算法的雇佣蜂+观察蜂阶段）（优化版：拆分为子函数）
 
         策略：
         - 雇佣蜂：按适应度优先分配任务
@@ -238,48 +291,18 @@ class JiuwenSwarm:
         employed.sort(key=lambda a: a.fitness, reverse=True)
 
         task_idx = 0
-        for agent in employed:
-            if task_idx >= len(self.task_queue):
-                break
-            task = self.task_queue[task_idx]
-            assignment = TaskAssignment(
-                task_id=task["task_id"],
-                task_content=task["content"],
-                agent_id=agent.agent_id,
-            )
-            assignments.append(assignment)
-            task_idx += 1
 
-        # 观察蜂：跟随优秀雇佣蜂（选择相同类型的任务）
-        for agent in onlookers:
-            if task_idx >= len(self.task_queue):
-                break
-            # 观察蜂选择适应度最高的雇佣蜂正在处理的任务类型
-            if employed:
-                best_employed = max(employed, key=lambda a: a.fitness)
-                # 简化：分配下一个任务
-                task = self.task_queue[task_idx]
-                assignment = TaskAssignment(
-                    task_id=task["task_id"],
-                    task_content=task["content"],
-                    agent_id=agent.agent_id,
-                )
-                assignments.append(assignment)
-                task_idx += 1
+        # 雇佣蜂分配
+        emp_assignments, task_idx = self._assign_employed_bees(employed, task_idx)
+        assignments.extend(emp_assignments)
 
-        # 侦察蜂：随机分配（探索新任务）
-        for agent in scouts:
-            if task_idx >= len(self.task_queue):
-                break
-            task = random.choice(self.task_queue[task_idx:]) if task_idx < len(self.task_queue) else None
-            if task:
-                assignment = TaskAssignment(
-                    task_id=task["task_id"],
-                    task_content=task["content"],
-                    agent_id=agent.agent_id,
-                )
-                assignments.append(assignment)
-                task_idx += 1
+        # 观察蜂分配
+        onl_assignments, task_idx = self._assign_onlooker_bees(onlookers, employed, task_idx)
+        assignments.extend(onl_assignments)
+
+        # 侦察蜂分配
+        sc_assignments, task_idx = self._assign_scout_bees(scouts, task_idx)
+        assignments.extend(sc_assignments)
 
         # 移除已分配的任务
         assigned_ids = {a.task_id for a in assignments}
