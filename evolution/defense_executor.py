@@ -132,23 +132,11 @@ class DefenseRuleExecutor:
         Returns:
             执行结果
         """
-        result = ExecutionResult(
-            update_id=update.update_id,
-            status=ExecutionStatus.PENDING,
-            target=update.target,
-            action=update.action,
-            config_key=update.config_key,
-            config_value=update.config_value,
-        )
+        result = self._create_execution_result(update)
 
         # 1. 高危操作检查
-        if self._is_high_risk(update) and self.require_confirmation_for_high_risk:
-            if update.update_id not in self._confirmed_updates:
-                result.status = ExecutionStatus.SKIPPED
-                result.error = "高风险操作需要显式确认"
-                self._stats["skipped"] += 1
-                self.execution_history.append(result)
-                return result
+        if self._check_high_risk(update, result):
+            return result
 
         # 2. 执行前备份
         snapshot = self._backup_config(update.target)
@@ -157,48 +145,82 @@ class DefenseRuleExecutor:
         # 3. 执行更新
         start_time = time.time()
         result.status = ExecutionStatus.APPLYING
+        try:
+            self._execute_by_mode(update, snapshot, result)
+        except Exception as e:
+            self._handle_failure(update, snapshot, result, e)
+
+        # 4. 完成执行（审计、统计）
+        self._finalize_execution(result, start_time)
+        return result
+
+    def _create_execution_result(self, update: ConfigUpdate) -> ExecutionResult:
+        """创建执行结果对象"""
+        return ExecutionResult(
+            update_id=update.update_id,
+            status=ExecutionStatus.PENDING,
+            target=update.target,
+            action=update.action,
+            config_key=update.config_key,
+            config_value=update.config_value,
+        )
+
+    def _check_high_risk(self, update: ConfigUpdate, result: ExecutionResult) -> bool:
+        """高危操作检查，返回True表示需要跳过"""
+        if not (self._is_high_risk(update) and self.require_confirmation_for_high_risk):
+            return False
+        if update.update_id in self._confirmed_updates:
+            return False
+
+        result.status = ExecutionStatus.SKIPPED
+        result.error = "高风险操作需要显式确认"
+        self._stats["skipped"] += 1
+        self.execution_history.append(result)
+        return True
+
+    def _execute_by_mode(
+        self, update: ConfigUpdate, snapshot: Optional[Dict], result: ExecutionResult
+    ) -> None:
+        """按执行模式执行更新"""
+        if self.mode == ExecutionMode.DRY_RUN:
+            self._verify_update_safe(update)
+            result.status = ExecutionStatus.SUCCESS
+            result.verification_passed = True
+        elif self.mode == ExecutionMode.SIMULATE:
+            self._simulate_apply(update, snapshot)
+            result.status = ExecutionStatus.SUCCESS
+            result.verification_passed = True
+        else:  # APPLY
+            self._actual_apply(update)
+            result.status = ExecutionStatus.SUCCESS
+            if self.auto_verify:
+                result.verification_passed = self._verify_applied(update)
+                if not result.verification_passed:
+                    raise RuntimeError("执行后验证失败")
+
+    def _handle_failure(
+        self, update: ConfigUpdate, snapshot: Optional[Dict],
+        result: ExecutionResult, error: Exception
+    ) -> None:
+        """处理执行失败，自动回滚"""
+        result.status = ExecutionStatus.FAILED
+        result.error = str(error)
+
+        if not (self.auto_rollback_on_failure and snapshot):
+            return
 
         try:
-            if self.mode == ExecutionMode.DRY_RUN:
-                # DRY_RUN: 只验证不实际修改
-                self._verify_update_safe(update)
-                result.status = ExecutionStatus.SUCCESS
-                result.verification_passed = True
+            self._rollback(update.target, snapshot)
+            result.status = ExecutionStatus.ROLLED_BACK
+            self._stats["rolled_back"] += 1
+        except Exception as rollback_err:
+            result.error += f" | 回滚失败: {rollback_err}"
 
-            elif self.mode == ExecutionMode.SIMULATE:
-                # SIMULATE: 模拟执行
-                self._simulate_apply(update, snapshot)
-                result.status = ExecutionStatus.SUCCESS
-                result.verification_passed = True
-
-            else:  # APPLY
-                # APPLY: 实际应用
-                self._actual_apply(update)
-                result.status = ExecutionStatus.SUCCESS
-
-                # 4. 执行后验证
-                if self.auto_verify:
-                    result.verification_passed = self._verify_applied(update)
-                    if not result.verification_passed:
-                        raise RuntimeError("执行后验证失败")
-
-        except Exception as e:
-            result.status = ExecutionStatus.FAILED
-            result.error = str(e)
-
-            # 5. 失败自动回滚
-            if self.auto_rollback_on_failure and snapshot:
-                try:
-                    self._rollback(update.target, snapshot)
-                    result.status = ExecutionStatus.ROLLED_BACK
-                    self._stats["rolled_back"] += 1
-                except Exception as rollback_err:
-                    result.error += f" | 回滚失败: {rollback_err}"
-
+    def _finalize_execution(self, result: ExecutionResult, start_time: float) -> None:
+        """完成执行：记录审计、更新统计"""
         result.applied_at = time.time()
         result.duration_ms = (time.time() - start_time) * 1000
 
-        # 6. 记录审计
         self._log_audit(result)
         self._stats["total"] += 1
         if result.status == ExecutionStatus.SUCCESS:
@@ -207,7 +229,6 @@ class DefenseRuleExecutor:
             self._stats["failed"] += 1
 
         self.execution_history.append(result)
-        return result
 
     def execute_updates(self, updates: List[ConfigUpdate]) -> List[ExecutionResult]:
         """批量执行配置更新"""

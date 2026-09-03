@@ -65,24 +65,41 @@ class EscapeDetectionEngine:
         self._stats = {"total_checks": 0, "detected": 0, "blocked": 0}
 
     def _load_default_rules(self) -> List[Dict[str, Any]]:
-        """加载默认检测规则"""
+        """加载默认检测规则（按来源分组）"""
+        rules = []
+        rules.extend(self._seccomp_rules())
+        rules.extend(self._namespace_rules())
+        rules.extend(self._network_rules())
+        rules.extend(self._audit_rules())
+        rules.extend(self._filesystem_rules())
+        rules.extend(self._resource_rules())
+        return rules
+
+    def _seccomp_rules(self) -> List[Dict[str, Any]]:
+        """seccomp相关检测规则"""
+        return [{
+            "rule_id": "ESC-001",
+            "name": "seccomp高危系统调用",
+            "source": "seccomp",
+            "pattern": {"syscall": ["ptrace", "kexec_load", "init_module", "reboot"]},
+            "severity": EscapeSeverity.CONFIRMED_ATTEMPT,
+            "action": "kill_sandbox",
+        }]
+
+    def _namespace_rules(self) -> List[Dict[str, Any]]:
+        """namespace相关检测规则"""
+        return [{
+            "rule_id": "ESC-002",
+            "name": "namespace逃逸尝试",
+            "source": "namespace",
+            "pattern": {"syscall": ["setns", "unshare"], "flags": ["CLONE_NEWUSER", "CLONE_NEWNS"]},
+            "severity": EscapeSeverity.LIKELY_ATTEMPT,
+            "action": "block_syscall",
+        }]
+
+    def _network_rules(self) -> List[Dict[str, Any]]:
+        """网络相关检测规则"""
         return [
-            {
-                "rule_id": "ESC-001",
-                "name": "seccomp高危系统调用",
-                "source": "seccomp",
-                "pattern": {"syscall": ["ptrace", "kexec_load", "init_module", "reboot"]},
-                "severity": EscapeSeverity.CONFIRMED_ATTEMPT,
-                "action": "kill_sandbox",
-            },
-            {
-                "rule_id": "ESC-002",
-                "name": "namespace逃逸尝试",
-                "source": "namespace",
-                "pattern": {"syscall": ["setns", "unshare"], "flags": ["CLONE_NEWUSER", "CLONE_NEWNS"]},
-                "severity": EscapeSeverity.LIKELY_ATTEMPT,
-                "action": "block_syscall",
-            },
             {
                 "rule_id": "ESC-003",
                 "name": "内网访问尝试",
@@ -99,14 +116,22 @@ class EscapeDetectionEngine:
                 "severity": EscapeSeverity.LIKELY_ATTEMPT,
                 "action": "block_dns",
             },
-            {
-                "rule_id": "ESC-005",
-                "name": "审计链断裂",
-                "source": "audit",
-                "pattern": {"anomaly_type": "hash_chain_break"},
-                "severity": EscapeSeverity.CRITICAL,
-                "action": "freeze_sandbox",
-            },
+        ]
+
+    def _audit_rules(self) -> List[Dict[str, Any]]:
+        """审计相关检测规则"""
+        return [{
+            "rule_id": "ESC-005",
+            "name": "审计链断裂",
+            "source": "audit",
+            "pattern": {"anomaly_type": "hash_chain_break"},
+            "severity": EscapeSeverity.CRITICAL,
+            "action": "freeze_sandbox",
+        }]
+
+    def _filesystem_rules(self) -> List[Dict[str, Any]]:
+        """文件系统相关检测规则"""
+        return [
             {
                 "rule_id": "ESC-006",
                 "name": "敏感文件访问",
@@ -114,14 +139,6 @@ class EscapeDetectionEngine:
                 "pattern": {"path": ["/etc/shadow", "/etc/sudoers", "/proc/1/environ", "/root/.ssh"]},
                 "severity": EscapeSeverity.SUSPICIOUS,
                 "action": "deny_access",
-            },
-            {
-                "rule_id": "ESC-007",
-                "name": "fork bomb",
-                "source": "resource",
-                "pattern": {"fork_rate": ">100/s"},
-                "severity": EscapeSeverity.LIKELY_ATTEMPT,
-                "action": "kill_sandbox",
             },
             {
                 "rule_id": "ESC-008",
@@ -132,6 +149,17 @@ class EscapeDetectionEngine:
                 "action": "deny_access",
             },
         ]
+
+    def _resource_rules(self) -> List[Dict[str, Any]]:
+        """资源相关检测规则"""
+        return [{
+            "rule_id": "ESC-007",
+            "name": "fork bomb",
+            "source": "resource",
+            "pattern": {"fork_rate": ">100/s"},
+            "severity": EscapeSeverity.LIKELY_ATTEMPT,
+            "action": "kill_sandbox",
+        }]
 
     def check_event(self, event: Dict[str, Any]) -> Optional[EscapeEvent]:
         """
@@ -146,34 +174,49 @@ class EscapeDetectionEngine:
         self._stats["total_checks"] += 1
         event_source = event.get("source", event.get("event_source", "unknown"))
 
+        rule = self._find_matching_rule(event, event_source)
+        if not rule:
+            return None
+
+        escape_event = self._create_escape_event(rule, event, event_source)
+        self._record_detection(escape_event)
+        return escape_event
+
+    def _find_matching_rule(
+        self, event: Dict[str, Any], event_source: str
+    ) -> Optional[Dict[str, Any]]:
+        """查找匹配的检测规则"""
         for rule in self.detection_rules:
             if rule["source"] != event_source:
                 continue
-
             if self._match_rule(rule, event):
-                escape_event = EscapeEvent(
-                    event_id=f"esc-{int(time.time()*1000)}",
-                    timestamp=event.get("timestamp", time.time()),
-                    severity=rule["severity"],
-                    description=f"[{rule['rule_id']}] {rule['name']}: {event.get('description', '')}",
-                    sandbox_id=event.get("sandbox_id", "unknown"),
-                    source=event_source,
-                    details=event,
-                    blocked=self.auto_block,
-                    action_taken=rule["action"] if self.auto_block else "none",
-                )
-
-                self.detected_events.append(escape_event)
-                self._stats["detected"] += 1
-                if self.auto_block:
-                    self._stats["blocked"] += 1
-
-                if self.on_escape:
-                    self.on_escape(escape_event)
-
-                return escape_event
-
+                return rule
         return None
+
+    def _create_escape_event(
+        self, rule: Dict[str, Any], event: Dict[str, Any], event_source: str
+    ) -> EscapeEvent:
+        """创建逃逸事件对象"""
+        return EscapeEvent(
+            event_id=f"esc-{int(time.time()*1000)}",
+            timestamp=event.get("timestamp", time.time()),
+            severity=rule["severity"],
+            description=f"[{rule['rule_id']}] {rule['name']}: {event.get('description', '')}",
+            sandbox_id=event.get("sandbox_id", "unknown"),
+            source=event_source,
+            details=event,
+            blocked=self.auto_block,
+            action_taken=rule["action"] if self.auto_block else "none",
+        )
+
+    def _record_detection(self, escape_event: EscapeEvent) -> None:
+        """记录检测统计并触发回调"""
+        self.detected_events.append(escape_event)
+        self._stats["detected"] += 1
+        if self.auto_block:
+            self._stats["blocked"] += 1
+        if self.on_escape:
+            self.on_escape(escape_event)
 
     def _match_rule(self, rule: Dict[str, Any], event: Dict[str, Any]) -> bool:
         """检查事件是否匹配规则"""
