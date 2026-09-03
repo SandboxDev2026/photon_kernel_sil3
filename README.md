@@ -1,5 +1,20 @@
 # PhotonBox — 基于 KVM 硬件虚拟化的安全隔离沙盒
 
+> ⚠️ **生产就绪状态：🟡 内网受限可用，公网部署待验证**
+>
+> 本项目核心卖点是 KVM 硬件虚拟化（StrongPool），但 **StrongPool 尚未在真实 /dev/kvm 裸机环境完成端到端验证**。以下模块代码完整、单元测试通过，但缺少特权环境实测：
+>
+> | 未验证模块 | 缺失条件 | 风险 |
+> |-----------|---------|------|
+> | StrongPool (KVM MicroVM) | 无 /dev/kvm + firecracker | 核心卖点未验证 |
+> | eBPF 网络管控 | 无 CAP_BPF + libbpf | 网络隔离未实测 |
+> | CRIU 快照 | 无 criu 二进制 + root | 快照恢复未实测 |
+> | gRPC (C++) | 无 libgrpc++-dev | C++ 服务端未编译 |
+> | K8s Operator | 无 K8s 集群 | Reconcile 未实测 |
+> | namespace 隔离 | 无 CAP_SYS_ADMIN | 完整隔离未实测 |
+>
+> **当前仅适用于内网可信/半可信 Agent 场景，禁止直接对公网暴露不可信用户代码。** 生产部署前必须：① 在裸机 KVM 环境跑通 `scripts/verify_baremetal.sh`；② 完成独立第三方安全审计；③ 升级 OpenSSL/gRPC 依赖。
+
 轻量级、高性能、可审计的代码执行沙盒。**核心隔离底座为 KVM 硬件虚拟化**：每个 StrongPool 实例拥有独立的 Guest 内核，CPU 硬件级隔离内存（Intel VT-x / AMD-V + EPT/NPT），从根本上杜绝进程沙盒的内核逃逸风险。同时提供 LightPool 进程沙盒作为低延迟补充，支持双后端自动切换。
 
 ## 架构核心：KVM 硬件虚拟化
