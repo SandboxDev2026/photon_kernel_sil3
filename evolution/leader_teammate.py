@@ -433,8 +433,24 @@ class LeaderAgent:
         执行 Outer Loop（团队进化循环）
 
         阶段：GOAL → PLAN → EXECUTE → EVALUATE → UPDATE
-        拆分为多个子函数，每个子函数负责一个阶段。
+        拆分为阶段执行和结果组装两个子函数，主函数只负责调度。
         """
+        # 执行所有阶段，获取中间结果
+        results, success_count, total_count, success_rate = self._outer_loop_run_phases(task)
+
+        # 组装并返回结果
+        return self._outer_loop_build_result(task, results, success_count, total_count, success_rate)
+
+    def _outer_loop_run_phases(
+        self, task: Dict[str, Any]
+    ) -> Tuple[List['TaskResult'], int, int, float]:
+        """
+        执行 Outer Loop 所有阶段
+
+        阶段：GOAL → PLAN → EXECUTE → EVALUATE → UPDATE
+        返回: (结果列表, 成功数, 总数, 成功率)
+        """
+        # GOAL: 设置目标
         self.outer_loop_phase = LoopPhase.GOAL
         self.workspace.add_log(self.agent_id, f"[GOAL] Task: {task.get('description', 'Unknown')}")
 
@@ -453,6 +469,22 @@ class LeaderAgent:
         self.outer_loop_phase = LoopPhase.UPDATE
         self._outer_loop_update_evolution(task, success_rate)
 
+        return results, success_count, total_count, success_rate
+
+    def _outer_loop_build_result(
+        self,
+        task: Dict[str, Any],
+        results: List['TaskResult'],
+        success_count: int,
+        total_count: int,
+        success_rate: float,
+    ) -> Dict[str, Any]:
+        """
+        组装 Outer Loop 执行结果
+
+        将各阶段的中间结果组装为统一的返回字典，包含任务信息、统计数据、
+        详细结果、阶段列表和产物。
+        """
         return {
             "task_id": task.get("task_id"),
             "total_subtasks": total_count,

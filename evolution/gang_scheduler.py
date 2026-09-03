@@ -276,36 +276,59 @@ class GangScheduler:
         """
         尝试为 Gang 分配资源（原子分配）
 
+        拆分为验证和执行两个子函数，主函数只负责锁管理和调用。
         返回: (是否成功, 原因)
         """
         with self._lock:
-            gang = self.gangs.get(gang_id)
-            if not gang:
-                return False, "Gang not found"
+            valid, reason, gang = self._validate_gang_for_allocation(gang_id)
+            if not valid:
+                return False, reason
+            return self._perform_gang_allocation(gang)
 
-            if gang.status != GangStatus.PENDING:
-                return False, f"Gang status is {gang.status.value}, not pending"
+    def _validate_gang_for_allocation(self, gang_id: str) -> Tuple[bool, str, Optional['GangJob']]:
+        """
+        验证 Gang 是否可以分配资源
 
-            # 检查并发上限
-            if len(self.running_gangs) >= self._max_concurrent_gangs:
-                return False, "Max concurrent gangs reached"
+        检查项：Gang 存在性、状态、并发上限。
+        返回: (是否有效, 原因, Gang对象)
+        """
+        gang = self.gangs.get(gang_id)
+        if not gang:
+            return False, "Gang not found", None
 
-            # 拓扑感知分配
-            placement = self.topology_scheduler.find_best_numa_placement(gang.instances)
+        if gang.status != GangStatus.PENDING:
+            return False, f"Gang status is {gang.status.value}, not pending", None
 
-            # 检查是否所有实例都能分配
-            unassigned = [iid for iid, node in placement.items() if node is None]
-            if unassigned and gang.all_or_nothing:
-                gang.status = GangStatus.PENDING
-                return False, f"Cannot allocate all instances (unassigned: {len(unassigned)})"
+        # 检查并发上限
+        if len(self.running_gangs) >= self._max_concurrent_gangs:
+            return False, "Max concurrent gangs reached", None
 
-            # 分配成功，更新实例状态
-            for inst in gang.instances:
-                inst.assigned_numa_node = placement.get(inst.instance_id)
-                inst.status = "allocated"
+        return True, "Valid", gang
 
-            gang.status = GangStatus.RESOURCES_READY
-            return True, "All resources allocated"
+    def _perform_gang_allocation(self, gang: 'GangJob') -> Tuple[bool, str]:
+        """
+        执行拓扑感知资源分配
+
+        调用拓扑调度器找到最佳 NUMA 放置，检查 all-or-nothing 约束，
+        然后更新实例状态和 Gang 状态。
+        返回: (是否成功, 原因)
+        """
+        # 拓扑感知分配
+        placement = self.topology_scheduler.find_best_numa_placement(gang.instances)
+
+        # 检查是否所有实例都能分配
+        unassigned = [iid for iid, node in placement.items() if node is None]
+        if unassigned and gang.all_or_nothing:
+            gang.status = GangStatus.PENDING
+            return False, f"Cannot allocate all instances (unassigned: {len(unassigned)})"
+
+        # 分配成功，更新实例状态
+        for inst in gang.instances:
+            inst.assigned_numa_node = placement.get(inst.instance_id)
+            inst.status = "allocated"
+
+        gang.status = GangStatus.RESOURCES_READY
+        return True, "All resources allocated"
 
     def start_gang(self, gang_id: str) -> Tuple[bool, str]:
         """
