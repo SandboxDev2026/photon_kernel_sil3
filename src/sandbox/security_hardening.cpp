@@ -401,7 +401,7 @@ void ReleaseGateService::stop() {
     if (child_pid_ > 0) {
         kill(child_pid_, SIGTERM);
         // 等待子进程退出
-        int status;
+        int status = 0;
         waitpid(child_pid_, &status, 0);
         child_pid_ = -1;
     }

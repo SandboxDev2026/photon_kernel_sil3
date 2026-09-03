@@ -108,63 +108,9 @@ class MonitorDashboard:
             return "warning"
         return "healthy"
 
-    def render(self) -> str:
-        """渲染HTML大屏"""
-        health = self.get_health_status()
-        alert_summary = self.get_alert_summary()
-        health_color = {"healthy": "#00ff88", "warning": "#ffaa00", "critical": "#ff4444"}.get(health, "#888")
-        health_text = {"healthy": "健康", "warning": "警告", "critical": "严重"}.get(health, "未知")
-
-        # 构建指标卡片HTML
-        metric_cards = ""
-        for name, data in self._metrics.items():
-            value = data.get("value", 0) if isinstance(data, dict) else data
-            unit = data.get("unit", "") if isinstance(data, dict) else ""
-            display_value = f"{value:.2f}" if isinstance(value, float) else str(value)
-            metric_cards += f'''
-            <div class="metric-card">
-                <div class="metric-name">{name}</div>
-                <div class="metric-value">{display_value} <span class="metric-unit">{unit}</span></div>
-            </div>'''
-
-        # 构建告警列表HTML
-        alert_items = ""
-        for alert in self._alerts[:20]:
-            level = alert.get("level", "info")
-            level_color = {"critical": "#ff4444", "warning": "#ffaa00", "info": "#44aaff"}.get(level, "#888")
-            alert_items += f'''
-            <div class="alert-item alert-{level}">
-                <span class="alert-level" style="color:{level_color}">[{level.upper()}]</span>
-                <span class="alert-time">{alert.get("time_str", "")}</span>
-                <span class="alert-msg">{alert.get("message", "")}</span>
-            </div>'''
-
-        if not alert_items:
-            alert_items = '<div class="no-alerts">暂无告警，系统运行正常</div>'
-
-        # 构建节点列表HTML
-        node_items = ""
-        for node in self._nodes:
-            status = node.get("status", "unknown")
-            status_color = {"ready": "#00ff88", "notready": "#ff4444", "unknown": "#888"}.get(status, "#888")
-            node_items += f'''
-            <div class="node-item">
-                <span class="node-status" style="background:{status_color}"></span>
-                <span class="node-name">{node.get("name", "unknown")}</span>
-                <span class="node-ip">{node.get("ip", "")}</span>
-                <span class="node-pods">Pods: {node.get("pods", 0)}</span>
-            </div>'''
-
-        # 构建历史数据JSON
-        history_json = json.dumps(self._history)
-
-        html = f'''<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{self.title}</title>
-    <style>
+    def _render_css(self) -> str:
+        """渲染CSS样式"""
+        return """
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{
             font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
@@ -296,9 +242,11 @@ class MonitorDashboard:
             border-top: 1px solid #1f2937;
         }}
         .full-width {{ grid-column: 1 / -1; }}
-    </style>
-</head>
-<body>
+        """
+
+    def _render_header(self, health_color: str, health_text: str, alert_summary: Dict[str, int]) -> str:
+        """渲染头部"""
+        return f'''
     <div class="header">
         <h1>{self.title}</h1>
         <div class="health-status">
@@ -310,30 +258,41 @@ class MonitorDashboard:
             <span class="alert-warning">警告: {alert_summary["warning"]}</span>
             <span class="alert-info">信息: {alert_summary["info"]}</span>
         </div>
-    </div>
+        '''
 
-    <div class="main">
-        <div class="panel full-width">
-            <div class="panel-title">核心指标</div>
-            <div class="metric-grid">
-                {metric_cards}
-            </div>
-        </div>
+    def _render_metric_cards(self) -> str:
+        """渲染指标卡片"""
+        cards = ""
+        for name, data in self._metrics.items():
+            value = data.get("value", 0) if isinstance(data, dict) else data
+            unit = data.get("unit", "") if isinstance(data, dict) else ""
+            display_value = f"{value:.2f}" if isinstance(value, float) else str(value)
+            cards += f'<div class="metric-card"><div class="metric-name">{name}</div><div class="metric-value">{display_value} <span class="metric-unit">{unit}</span></div></div>'
+        return f'<div class="panel full-width"><div class="panel-title">核心指标</div><div class="metric-grid">{cards}</div></div>'
 
-        <div class="panel">
-            <div class="panel-title">实时告警</div>
-            <div class="alert-list">
-                {alert_items}
-            </div>
-        </div>
+    def _render_alert_list(self) -> str:
+        """渲染告警列表"""
+        items = ""
+        for alert in self._alerts[:20]:
+            level = alert.get("level", "info")
+            level_color = {"critical": "#ff4444", "warning": "#ffaa00", "info": "#44aaff"}.get(level, "#888")
+            items += f'<div class="alert-item alert-{level}"><span class="alert-level" style="color:{level_color}">[{level.upper()}]</span><span class="alert-time">{alert.get("time_str", "")}</span><span class="alert-msg">{alert.get("message", "")}</span></div>'
+        if not items:
+            items = '<div class="no-alerts">暂无告警，系统运行正常</div>'
+        return f'<div class="panel"><div class="panel-title">实时告警</div><div class="alert-list">{items}</div></div>'
 
-        <div class="panel">
-            <div class="panel-title">集群节点</div>
-            <div class="node-list">
-                {node_items}
-            </div>
-        </div>
+    def _render_node_list(self) -> str:
+        """渲染节点列表"""
+        items = ""
+        for node in self._nodes:
+            status = node.get("status", "unknown")
+            status_color = {"ready": "#00ff88", "notready": "#ff4444", "unknown": "#888"}.get(status, "#888")
+            items += f'<div class="node-item"><span class="node-status" style="background:{status_color}"></span><span class="node-name">{node.get("name", "unknown")}</span><span class="node-ip">{node.get("ip", "")}</span><span class="node-pods">Pods: {node.get("pods", 0)}</span></div>'
+        return f'<div class="panel"><div class="panel-title">集群节点</div><div class="node-list">{items}</div></div>'
 
+    def _render_threshold_info(self) -> str:
+        """渲染阈值信息"""
+        return f'''
         <div class="panel">
             <div class="panel-title">告警阈值配置</div>
             <div class="threshold-info">
@@ -348,19 +307,44 @@ class MonitorDashboard:
                 </ul>
             </div>
         </div>
-    </div>
+        '''
 
+    def render(self) -> str:
+        """渲染HTML大屏（优化版：拆分成多个子函数）"""
+        health = self.get_health_status()
+        alert_summary = self.get_alert_summary()
+        health_color = {"healthy": "#00ff88", "warning": "#ffaa00", "critical": "#ff4444"}.get(health, "#888")
+        health_text = {"healthy": "健康", "warning": "警告", "critical": "严重"}.get(health, "未知")
+        css = self._render_css()
+        header = self._render_header(health_color, health_text, alert_summary)
+        metric_cards = self._render_metric_cards()
+        alert_list = self._render_alert_list()
+        node_list = self._render_node_list()
+        threshold_info = self._render_threshold_info()
+        return f'''<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{self.title}</title>
+    <style>{css}</style>
+</head>
+<body>
+    {header}
+    <div class="main">
+        {metric_cards}
+        {alert_list}
+        {node_list}
+        {threshold_info}
+    </div>
     <div class="footer">
         PhotonBox 监控大屏 | 生成时间: {time.strftime("%Y-%m-%d %H:%M:%S")} | 数据每5秒自动刷新
     </div>
-
     <script>
-        // 自动刷新（模拟）
         setTimeout(function() {{ location.reload(); }}, 5000);
     </script>
 </body>
 </html>'''
-        return html
 
     def render_json(self) -> Dict[str, Any]:
         """渲染JSON格式数据（用于API）"""

@@ -249,92 +249,70 @@ class InferenceMetrics:
 
             return snapshot
 
-    def check_alerts(self, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
-        """
-        检查告警阈值
-
-        Args:
-            thresholds: 阈值字典，支持的key:
-                - p99_latency_ms: P99延迟阈值(ms)，默认500
-                - error_rate: 错误率阈值(%)，默认1.0
-                - qps: QPS阈值，超过则告警
-                - vram_fragmentation_rate: 显存碎片率阈值(%)，默认15
-                - gpu_utilization_high: GPU利用率高阈值(%)，默认85
-                - gpu_utilization_low: GPU利用率低阈值(%)，默认70
-                - queue_depth: 队列深度阈值
-
-        Returns:
-            告警列表
-        """
-        snapshot = self.get_snapshot()
+    def _check_latency_alerts(self, snapshot, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查延迟相关告警"""
         alerts = []
-
-        # P99延迟
         p99_threshold = thresholds.get("p99_latency_ms", 500)
         if snapshot.p99_latency_ms > p99_threshold:
-            alerts.append({
-                "level": "critical",
-                "metric": "p99_latency_ms",
-                "value": snapshot.p99_latency_ms,
-                "threshold": p99_threshold,
-                "message": f"P99延迟 {snapshot.p99_latency_ms:.1f}ms 超过阈值 {p99_threshold}ms",
-            })
+            alerts.append({"level": "critical", "metric": "p99_latency_ms",
+                "value": snapshot.p99_latency_ms, "threshold": p99_threshold,
+                "message": f"P99延迟 {snapshot.p99_latency_ms:.1f}ms 超过阈值 {p99_threshold}ms"})
+        return alerts
 
-        # 错误率
+    def _check_error_rate_alerts(self, snapshot, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查错误率告警"""
+        alerts = []
         error_threshold = thresholds.get("error_rate", 1.0)
         if snapshot.error_rate > error_threshold:
-            alerts.append({
-                "level": "critical",
-                "metric": "error_rate",
-                "value": snapshot.error_rate,
-                "threshold": error_threshold,
-                "message": f"错误率 {snapshot.error_rate:.2f}% 超过阈值 {error_threshold}%",
-            })
+            alerts.append({"level": "critical", "metric": "error_rate",
+                "value": snapshot.error_rate, "threshold": error_threshold,
+                "message": f"错误率 {snapshot.error_rate:.2f}% 超过阈值 {error_threshold}%"})
+        return alerts
 
-        # 显存碎片率
+    def _check_vram_alerts(self, snapshot, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查显存相关告警"""
+        alerts = []
         frag_threshold = thresholds.get("vram_fragmentation_rate", 15)
         if snapshot.vram_fragmentation_rate > frag_threshold:
-            alerts.append({
-                "level": "warning",
-                "metric": "vram_fragmentation_rate",
-                "value": snapshot.vram_fragmentation_rate,
-                "threshold": frag_threshold,
-                "message": f"显存碎片率 {snapshot.vram_fragmentation_rate:.1f}% 超过阈值 {frag_threshold}%",
-            })
+            alerts.append({"level": "warning", "metric": "vram_fragmentation_rate",
+                "value": snapshot.vram_fragmentation_rate, "threshold": frag_threshold,
+                "message": f"显存碎片率 {snapshot.vram_fragmentation_rate:.1f}% 超过阈值 {frag_threshold}%"})
+        return alerts
 
-        # GPU利用率过高
+    def _check_gpu_alerts(self, snapshot, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查GPU利用率告警"""
+        alerts = []
         gpu_high = thresholds.get("gpu_utilization_high", 85)
-        if snapshot.gpu_utilization > gpu_high:
-            alerts.append({
-                "level": "warning",
-                "metric": "gpu_utilization",
-                "value": snapshot.gpu_utilization,
-                "threshold": gpu_high,
-                "message": f"GPU利用率 {snapshot.gpu_utilization:.1f}% 超过阈值 {gpu_high}%，建议扩容",
-            })
-
-        # GPU利用率过低
         gpu_low = thresholds.get("gpu_utilization_low", 70)
-        if 0 < snapshot.gpu_utilization < gpu_low and snapshot.qps > 0:
-            alerts.append({
-                "level": "info",
-                "metric": "gpu_utilization",
-                "value": snapshot.gpu_utilization,
-                "threshold": gpu_low,
-                "message": f"GPU利用率 {snapshot.gpu_utilization:.1f}% 低于阈值 {gpu_low}%，建议缩容",
-            })
+        if snapshot.gpu_utilization > gpu_high:
+            alerts.append({"level": "warning", "metric": "gpu_utilization",
+                "value": snapshot.gpu_utilization, "threshold": gpu_high,
+                "message": f"GPU利用率 {snapshot.gpu_utilization:.1f}% 超过阈值 {gpu_high}%，建议扩容"})
+        elif snapshot.gpu_utilization > 0 and snapshot.gpu_utilization < gpu_low:
+            alerts.append({"level": "info", "metric": "gpu_utilization_low",
+                "value": snapshot.gpu_utilization, "threshold": gpu_low,
+                "message": f"GPU利用率 {snapshot.gpu_utilization:.1f}% 低于阈值 {gpu_low}%，建议缩容"})
+        return alerts
 
-        # 队列深度
+    def _check_queue_alerts(self, snapshot, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查队列深度告警"""
+        alerts = []
         queue_threshold = thresholds.get("queue_depth", 100)
         if snapshot.queue_depth > queue_threshold:
-            alerts.append({
-                "level": "warning",
-                "metric": "queue_depth",
-                "value": snapshot.queue_depth,
-                "threshold": queue_threshold,
-                "message": f"请求队列深度 {snapshot.queue_depth} 超过阈值 {queue_threshold}",
-            })
+            alerts.append({"level": "warning", "metric": "queue_depth",
+                "value": snapshot.queue_depth, "threshold": queue_threshold,
+                "message": f"请求队列深度 {snapshot.queue_depth} 超过阈值 {queue_threshold}"})
+        return alerts
 
+    def check_alerts(self, thresholds: Dict[str, float]) -> List[Dict[str, Any]]:
+        """检查所有告警（优化版：拆分成多个子函数）"""
+        snapshot = self.get_snapshot()
+        alerts = []
+        alerts.extend(self._check_latency_alerts(snapshot, thresholds))
+        alerts.extend(self._check_error_rate_alerts(snapshot, thresholds))
+        alerts.extend(self._check_vram_alerts(snapshot, thresholds))
+        alerts.extend(self._check_gpu_alerts(snapshot, thresholds))
+        alerts.extend(self._check_queue_alerts(snapshot, thresholds))
         return alerts
 
     def export_prometheus(self) -> str:

@@ -323,7 +323,7 @@ ExecutionResult PayloadExecutor::execute_with_timeout(std::function<ExecutionRes
     close(pipefd[1]);  // 关闭写端
 
     ExecutionResult result;
-    int status;
+    int status = 0;
     bool timed_out = false;
 
     // 等待子进程结束或超时

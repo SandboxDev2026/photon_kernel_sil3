@@ -180,7 +180,7 @@ int NetworkResourceGuard::execute_command(const std::string& cmd, uint32_t timeo
     }
 
     // 父进程: 等待超时
-    int status;
+    int status = 0;
     auto start = std::chrono::steady_clock::now();
 
     while (true) {

@@ -118,7 +118,7 @@ int main(int argc, char* argv[]) {
 
     // 读取结果
     size_t result_size;
-    int exit_code;
+    int exit_code = 0;
     const uint8_t* result = channel->read_result(result_size, exit_code);
     std::string result_str(reinterpret_cast<const char*>(result), result_size);
 
