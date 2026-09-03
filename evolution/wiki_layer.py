@@ -271,43 +271,43 @@ class WikiLayer:
         self._iteration = 0
         self._total_compilations = 0
 
-    def add_pattern(self,
-                    title: str,
-                    pattern_type: PatternType = PatternType.FAILURE_PATTERN,
-                    severity: PatternSeverity = PatternSeverity.MEDIUM,
-                    description: str = "",
-                    root_cause: str = "",
-                    fix_strategy: str = "",
-                    fix_example: str = "",
-                    affected_skills: Optional[List[str]] = None,
-                    source_trajectories: Optional[List[str]] = None,
-                    tags: Optional[List[str]] = None,
-                    metadata: Optional[Dict[str, Any]] = None) -> WikiPattern:
-        """
-        添加知识模式
-
-        如果已存在相同标题的模式，则更新发生次数和最后发生时间。
-        """
-        # 检查是否已存在相同标题的模式
-        existing = None
+    def _find_existing_pattern(self, title: str) -> Optional[WikiPattern]:
+        """查找已存在相同标题的模式"""
         for p in self._patterns.values():
             if p.title == title:
-                existing = p
-                break
+                return p
+        return None
 
-        if existing:
-            existing.occurrence_count += 1
-            existing.last_seen = time.time()
-            if affected_skills:
-                for s in affected_skills:
-                    if s not in existing.affected_skills:
-                        existing.affected_skills.append(s)
-            if source_trajectories:
-                for t in source_trajectories:
-                    if t not in existing.source_trajectories:
-                        existing.source_trajectories.append(t)
-            return existing
+    def _update_existing_pattern(self,
+                                   existing: WikiPattern,
+                                   affected_skills: Optional[List[str]],
+                                   source_trajectories: Optional[List[str]]) -> WikiPattern:
+        """更新已存在的模式（增加发生次数和关联）"""
+        existing.occurrence_count += 1
+        existing.last_seen = time.time()
+        if affected_skills:
+            for s in affected_skills:
+                if s not in existing.affected_skills:
+                    existing.affected_skills.append(s)
+        if source_trajectories:
+            for t in source_trajectories:
+                if t not in existing.source_trajectories:
+                    existing.source_trajectories.append(t)
+        return existing
 
+    def _create_new_pattern(self,
+                              title: str,
+                              pattern_type: PatternType,
+                              severity: PatternSeverity,
+                              description: str,
+                              root_cause: str,
+                              fix_strategy: str,
+                              fix_example: str,
+                              affected_skills: Optional[List[str]],
+                              source_trajectories: Optional[List[str]],
+                              tags: Optional[List[str]],
+                              metadata: Optional[Dict[str, Any]]) -> WikiPattern:
+        """创建新知识模式"""
         pattern = WikiPattern(
             pattern_type=pattern_type,
             severity=severity,
@@ -323,6 +323,34 @@ class WikiLayer:
         )
         self._patterns[pattern.pattern_id] = pattern
         return pattern
+
+    def add_pattern(self,
+                    title: str,
+                    pattern_type: PatternType = PatternType.FAILURE_PATTERN,
+                    severity: PatternSeverity = PatternSeverity.MEDIUM,
+                    description: str = "",
+                    root_cause: str = "",
+                    fix_strategy: str = "",
+                    fix_example: str = "",
+                    affected_skills: Optional[List[str]] = None,
+                    source_trajectories: Optional[List[str]] = None,
+                    tags: Optional[List[str]] = None,
+                    metadata: Optional[Dict[str, Any]] = None) -> WikiPattern:
+        """
+        添加知识模式（优化版：拆分为3个子函数）
+
+        如果已存在相同标题的模式，则更新发生次数和最后发生时间。
+        """
+        # 1. 检查是否已存在相同标题的模式
+        existing = self._find_existing_pattern(title)
+        if existing:
+            return self._update_existing_pattern(existing, affected_skills, source_trajectories)
+
+        # 2. 创建新模式
+        return self._create_new_pattern(
+            title, pattern_type, severity, description, root_cause,
+            fix_strategy, fix_example, affected_skills, source_trajectories, tags, metadata
+        )
 
     def get_pattern(self, pattern_id: str) -> Optional[WikiPattern]:
         """按 ID 获取模式"""

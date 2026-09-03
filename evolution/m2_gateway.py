@@ -410,58 +410,79 @@ class M2DetectionGateway:
             baseline_risk=self.baseline_risk,
         )
 
+    def _check_critical_features(self, features: List[SemanticFeature], reasons: List[str]) -> Optional[FilterDecision]:
+        """检查严重特征（直接拒绝/隔离）"""
+        critical_features = [f for f in features if f.severity == RiskLevel.CRITICAL]
+        if critical_features:
+            reasons.append(f"检测到 {len(critical_features)} 个严重风险特征: "
+                          f"{', '.join(f.feature_type.value for f in critical_features)}")
+            return FilterDecision.QUARANTINE
+        return None
+
+    def _check_evasion_features(self, features: List[SemanticFeature], reasons: List[str]) -> Optional[FilterDecision]:
+        """检查沙盒逃逸尝试（直接拒绝）"""
+        evasion_features = [f for f in features if f.feature_type == SemanticFeatureType.SANDBOX_EVASION]
+        if evasion_features:
+            reasons.append(f"检测到沙盒逃逸尝试: {len(evasion_features)}处")
+            return FilterDecision.REJECT
+        return None
+
+    def _decision_by_risk_score(self,
+                                  risk_score: float,
+                                  momentum: SemanticMomentum,
+                                  features: List[SemanticFeature],
+                                  reasons: List[str]) -> FilterDecision:
+        """基于风险分数的决策"""
+        if momentum.obfuscation_detected:
+            reasons.append("检测到代码混淆，可能隐藏恶意行为")
+
+        reject_threshold = self.decision_thresholds.get(FilterDecision.REJECT, 0.85)
+        warn_threshold = self.decision_thresholds.get(FilterDecision.WARN, 0.6)
+        allow_threshold = self.decision_thresholds.get(FilterDecision.ALLOW, 0.3)
+
+        if risk_score >= reject_threshold:
+            reasons.append(f"风险分数 {risk_score:.2f} 超过拒绝阈值 {reject_threshold:.2f}")
+            return FilterDecision.QUARANTINE
+        elif risk_score >= warn_threshold:
+            reasons.append(f"风险分数 {risk_score:.2f} 超过警告阈值 {warn_threshold:.2f}")
+            if momentum.momentum > 0.3:
+                reasons.append(f"语义动量 {momentum.momentum:.2f} 较高，风险呈增加趋势")
+            return FilterDecision.REJECT
+        elif risk_score >= allow_threshold:
+            reasons.append(f"风险分数 {risk_score:.2f} 在警告范围内")
+            high_risk = [f for f in features if f.severity in [RiskLevel.HIGH, RiskLevel.CRITICAL]]
+            if high_risk:
+                reasons.append(f"包含 {len(high_risk)} 个高风险特征，建议人工审核")
+            return FilterDecision.WARN
+        else:
+            reasons.append(f"风险分数 {risk_score:.2f} 在安全范围内")
+            return FilterDecision.ALLOW
+
     def make_decision(self,
                       risk_score: float,
                       momentum: SemanticMomentum,
                       features: List[SemanticFeature]) -> Tuple[FilterDecision, List[str]]:
         """
-        根据风险分数和语义动量做出过滤决策
+        根据风险分数和语义动量做出过滤决策（优化版：拆分为3个子函数）
 
         Returns:
             (决策, 决策原因列表)
         """
         reasons = []
 
-        # 检查严重特征（直接拒绝/隔离）
-        critical_features = [f for f in features if f.severity == RiskLevel.CRITICAL]
-        if critical_features:
-            reasons.append(f"检测到 {len(critical_features)} 个严重风险特征: "
-                          f"{', '.join(f.feature_type.value for f in critical_features)}")
-            return FilterDecision.QUARANTINE, reasons
+        # 1. 检查严重特征（直接拒绝/隔离）
+        decision = self._check_critical_features(features, reasons)
+        if decision:
+            return decision, reasons
 
-        # 检查沙盒逃逸尝试（直接拒绝）
-        evasion_features = [f for f in features if f.feature_type == SemanticFeatureType.SANDBOX_EVASION]
-        if evasion_features:
-            reasons.append(f"检测到沙盒逃逸尝试: {len(evasion_features)}处")
-            return FilterDecision.REJECT, reasons
+        # 2. 检查沙盒逃逸尝试（直接拒绝）
+        decision = self._check_evasion_features(features, reasons)
+        if decision:
+            return decision, reasons
 
-        # 检查混淆（高风险）
-        if momentum.obfuscation_detected:
-            reasons.append("检测到代码混淆，可能隐藏恶意行为")
-
-        # 基于风险分数的决策
-        if risk_score >= self.decision_thresholds.get(FilterDecision.REJECT, 0.85):
-            reasons.append(f"风险分数 {risk_score:.2f} 超过拒绝阈值 "
-                          f"{self.decision_thresholds.get(FilterDecision.REJECT, 0.85):.2f}")
-            return FilterDecision.QUARANTINE, reasons
-
-        elif risk_score >= self.decision_thresholds.get(FilterDecision.WARN, 0.6):
-            reasons.append(f"风险分数 {risk_score:.2f} 超过警告阈值 "
-                          f"{self.decision_thresholds.get(FilterDecision.WARN, 0.6):.2f}")
-            if momentum.momentum > 0.3:
-                reasons.append(f"语义动量 {momentum.momentum:.2f} 较高，风险呈增加趋势")
-            return FilterDecision.REJECT, reasons
-
-        elif risk_score >= self.decision_thresholds.get(FilterDecision.ALLOW, 0.3):
-            reasons.append(f"风险分数 {risk_score:.2f} 在警告范围内")
-            high_risk = [f for f in features if f.severity in [RiskLevel.HIGH, RiskLevel.CRITICAL]]
-            if high_risk:
-                reasons.append(f"包含 {len(high_risk)} 个高风险特征，建议人工审核")
-            return FilterDecision.WARN, reasons
-
-        else:
-            reasons.append(f"风险分数 {risk_score:.2f} 在安全范围内")
-            return FilterDecision.ALLOW, reasons
+        # 3. 基于风险分数的决策
+        decision = self._decision_by_risk_score(risk_score, momentum, features, reasons)
+        return decision, reasons
 
     def _build_filter_result(self,
                                decision: FilterDecision,
