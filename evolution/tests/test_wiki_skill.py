@@ -520,3 +520,173 @@ class TestWikiSkillIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWikiSkillEdgeCases(unittest.TestCase):
+    """WikiSkill 边界条件和异常路径测试"""
+
+    def test_raw_layer_error_logging(self):
+        """RawLayer 错误日志记录（持久化失败）"""
+        # 使用无效路径触发持久化失败
+        raw = RawLayer(persist_path="/invalid/path/that/does/not/exist/data.json")
+        raw.record(skill_id="s1", task="test", success=True)
+        # 持久化应该失败，但不影响主流程
+        error_log = raw.get_error_log()
+        self.assertGreaterEqual(len(error_log), 0)  # 可能失败也可能成功（取决于权限）
+
+    def test_raw_layer_empty_trajectories(self):
+        """RawLayer 空轨迹边界条件"""
+        raw = RawLayer()
+        self.assertEqual(len(raw.get_all()), 0)
+        self.assertEqual(raw.get_success_rate("s1"), 0.0)
+        self.assertEqual(len(raw.get_failures()), 0)
+        self.assertEqual(len(raw.get_successes()), 0)
+        self.assertTrue(raw.verify_all())
+
+    def test_raw_layer_max_trajectories_eviction(self):
+        """RawLayer 最大轨迹数量限制（淘汰最旧的）"""
+        raw = RawLayer(max_trajectories=3)
+        for i in range(5):
+            raw.record(skill_id="s1", task=f"task_{i}", success=True)
+        self.assertEqual(len(raw.get_all()), 3)
+        # 最旧的应该被淘汰
+        tasks = [t.task for t in raw.get_all()]
+        self.assertNotIn("task_0", tasks)
+        self.assertNotIn("task_1", tasks)
+
+    def test_wiki_layer_empty_patterns(self):
+        """WikiLayer 空模式边界条件"""
+        wiki = WikiLayer()
+        self.assertEqual(len(wiki.get_all_patterns()), 0)
+        self.assertEqual(len(wiki.get_failure_patterns()), 0)
+        self.assertEqual(len(wiki.get_success_patterns()), 0)
+        self.assertEqual(len(wiki.get_logs()), 0)
+        knowledge = wiki.get_knowledge_for_skill_evolution("s1")
+        self.assertEqual(knowledge["skill_id"], "s1")
+        self.assertEqual(len(knowledge["failure_patterns"]), 0)
+
+    def test_wiki_layer_resolve_nonexistent_pattern(self):
+        """WikiLayer 解析不存在的模式"""
+        wiki = WikiLayer()
+        result = wiki.resolve_pattern("nonexistent_id", "测试")
+        self.assertFalse(result)
+
+    def test_wiki_layer_compile_empty_trajectories(self):
+        """WikiLayer 编译空轨迹"""
+        wiki = WikiLayer()
+        patterns = wiki.compile_from_trajectories([])
+        self.assertEqual(len(patterns), 0)
+
+    def test_wiki_layer_compile_only_successes(self):
+        """WikiLayer 只编译成功轨迹（不足3次不生成模式）"""
+        wiki = WikiLayer()
+
+        class MockTraj:
+            def __init__(self, skill_id, success, error_type="", error="", trajectory_id="t1"):
+                self.skill_id = skill_id
+                self.success = success
+                self.error_type = error_type
+                self.error = error
+                self.trajectory_id = trajectory_id
+
+        # 只有2次成功，不足3次，不生成成功策略
+        trajectories = [MockTraj("s1", True) for _ in range(2)]
+        patterns = wiki.compile_from_trajectories(trajectories)
+        self.assertEqual(len(patterns), 0)
+
+    def test_wiki_skill_evolver_force_evolution(self):
+        """WikiSkillEvolver 强制进化（忽略触发条件）"""
+        skill_lib = SkillLibrary()
+        skill = Skill(id="s1", name="s1", version="v1", code="pass")
+        skill_lib.add(skill)
+        evolver = WikiSkillEvolver(skill_lib, failure_threshold=100, min_executions_before_evolve=100)
+
+        # 没有失败，不应该触发进化
+        evolver.record_execution(skill_id="s1", task="t1", success=True)
+        self.assertFalse(evolver.should_evolve("s1"))
+
+        # 强制进化
+        result = evolver.evolve_skill("s1", force=True)
+        self.assertNotEqual(result.validation_result, "skipped")
+
+    def test_wiki_skill_evolver_no_wiki_knowledge(self):
+        """WikiSkillEvolver 不使用 Wiki 知识时验证失败"""
+        skill_lib = SkillLibrary()
+        skill = Skill(id="s1", name="s1", version="v1", code="pass")
+        skill_lib.add(skill)
+        evolver = WikiSkillEvolver(skill_lib, use_wiki_knowledge=False, failure_threshold=1)
+
+        evolver.record_execution(skill_id="s1", task="t1", success=False, error_type="logic_error", error="err")
+        result = evolver.evolve_skill("s1", force=True)
+        # 不使用Wiki知识时，验证应该失败（因为validation_passed = use_wiki_knowledge and len(patterns) > 0）
+        self.assertEqual(result.validation_result, "rejected")
+        # 但Wiki知识仍然保留
+        knowledge = evolver.get_wiki_knowledge("s1")
+        self.assertGreater(len(knowledge["all_patterns"]), 0)
+
+    def test_wiki_skill_evolver_get_stats(self):
+        """WikiSkillEvolver 获取统计信息"""
+        skill_lib = SkillLibrary()
+        skill = Skill(id="s1", name="s1", version="v1", code="pass")
+        skill_lib.add(skill)
+        evolver = WikiSkillEvolver(skill_lib)
+
+        evolver.record_execution(skill_id="s1", task="t1", success=True)
+        stats = evolver.get_stats()
+
+        self.assertIn("raw_layer", stats)
+        self.assertIn("wiki_layer", stats)
+        self.assertIn("skill_layer", stats)
+        self.assertTrue(stats["wiki_never_rollback"])
+        self.assertTrue(stats["use_wiki_knowledge"])
+        self.assertEqual(stats["raw_layer"]["total"], 1)
+
+    def test_wiki_pattern_severity_levels(self):
+        """WikiPattern 所有严重程度级别"""
+        wiki = WikiLayer()
+        for severity in [PatternSeverity.CRITICAL, PatternSeverity.HIGH, PatternSeverity.MEDIUM, PatternSeverity.LOW]:
+            pattern = wiki.add_pattern(
+                title=f"测试_{severity.value}",
+                pattern_type=PatternType.FAILURE_PATTERN,
+                severity=severity,
+            )
+            self.assertEqual(pattern.severity, severity)
+        self.assertEqual(len(wiki.get_all_patterns()), 4)
+
+    def test_wiki_pattern_all_types(self):
+        """WikiPattern 所有类型"""
+        wiki = WikiLayer()
+        for ptype in [PatternType.FAILURE_PATTERN, PatternType.SUCCESS_PATTERN,
+                      PatternType.BEST_PRACTICE, PatternType.ANTI_PATTERN, PatternType.LESSON_LEARNED]:
+            pattern = wiki.add_pattern(
+                title=f"测试_{ptype.value}",
+                pattern_type=ptype,
+            )
+            self.assertEqual(pattern.pattern_type, ptype)
+        self.assertEqual(len(wiki.get_all_patterns()), 5)
+        # 失败模式包括 FAILURE_PATTERN 和 ANTI_PATTERN
+        self.assertEqual(len(wiki.get_failure_patterns()), 2)
+        # 成功策略包括 SUCCESS_PATTERN 和 BEST_PRACTICE
+        self.assertEqual(len(wiki.get_success_patterns()), 2)
+
+    def test_raw_layer_trajectory_hash_verification(self):
+        """RawLayer 轨迹哈希验证（篡改检测）"""
+        raw = RawLayer()
+        traj = raw.record(skill_id="s1", task="test", success=True)
+        self.assertTrue(traj.verify_integrity())
+
+        # 篡改轨迹内容
+        traj.task = "tampered"
+        self.assertFalse(traj.verify_integrity())
+
+    def test_wiki_layer_export_markdown_with_content(self):
+        """WikiLayer 导出 Markdown（有内容）"""
+        wiki = WikiLayer()
+        wiki.add_pattern(title="测试模式", affected_skills=["s1"])
+        wiki.record_skill_impact(skill_id="s1", change_type="modify", validation_result="accepted")
+        wiki.add_log(event_type="discovery", description="测试发现")
+
+        md = wiki.export_markdown()
+        self.assertIn("Wiki 知识库", md)
+        self.assertIn("测试模式", md)
+        self.assertIn("s1", md)

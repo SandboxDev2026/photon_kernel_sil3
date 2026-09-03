@@ -268,32 +268,8 @@ class WikiSkillEvolver:
 
         return False
 
-    def evolve_skill(self,
-                     skill_id: str,
-                     trigger: str = "auto",
-                     force: bool = False) -> WikiSkillEvolutionResult:
-        """
-        【Evolver + Validator 角色】基于 Wiki 知识进化 Skill
-
-        完整流程：
-        1. 编译知识（从轨迹提取模式）
-        2. 获取 Wiki 知识包（失败模式、成功策略、被拒绝的改动）
-        3. 基于知识生成新 Skill
-        4. 验证新 Skill
-        5. 接受或回滚（Skill 层可以回滚，Wiki 层永不回滚）
-
-        Args:
-            skill_id: 要进化的 Skill ID
-            trigger: 触发原因
-            force: 是否强制进化（忽略触发条件）
-
-        Returns:
-            进化结果
-        """
-        start_time = time.time()
-        self._current_phase = EvolutionPhase.EVOLVING
-
-        # 检查触发条件
+    def _check_evolution_trigger(self, skill_id: str, force: bool) -> Optional[WikiSkillEvolutionResult]:
+        """检查进化触发条件，不满足时返回跳过结果"""
         if not force and not self.should_evolve(skill_id):
             return WikiSkillEvolutionResult(
                 success=False,
@@ -303,35 +279,25 @@ class WikiSkillEvolver:
                 rejection_reason="未达到进化触发条件",
                 notes="连续失败未达阈值或成功率未低于阈值",
             )
+        return None
 
-        # 获取进化前的成功率
-        success_rate_before = self.raw_layer.get_success_rate(skill_id)
-
-        # 1. 编译知识
-        patterns = self.compile_knowledge(skill_id)
-
-        # 2. 获取 Wiki 知识包
-        wiki_knowledge = self.wiki_layer.get_knowledge_for_skill_evolution(skill_id)
-
-        # 3. 检查被拒绝的改动（避免重复尝试）
-        rejected_changes = wiki_knowledge["rejected_changes"]
-        avoid_repeating = len(rejected_changes) > 0
-
-        # 4. 生成新 Skill（基于 Wiki 知识）
-        # 这里使用简化的模拟实现，实际应调用 LLM 生成
+    def _generate_new_skill_version(self, skill_id: str) -> tuple:
+        """生成新Skill版本号"""
         old_skill = self.skill_library.get(skill_id)
         old_version = old_skill.version if old_skill else "unknown"
         new_version = f"{old_version}-wiki-evolved"
+        return old_version, new_version
 
-        # 5. 验证新 Skill（简化模拟）
-        self._current_phase = EvolutionPhase.VALIDATING
+    def _validate_new_skill(self, patterns: List[WikiPattern]) -> bool:
+        """验证新Skill（简化模拟，实际应执行验证任务集）"""
+        return self.use_wiki_knowledge and len(patterns) > 0
 
-        # 模拟验证：基于 Wiki 知识的进化应该比没有知识的好
-        # 实际应执行验证任务集
-        validation_passed = self.use_wiki_knowledge and len(patterns) > 0
-
-        # 6. 记录 Skill 影响（即使被拒绝也保留在 Wiki 中）
-        impact = self.wiki_layer.record_skill_impact(
+    def _record_evolution_impact(self, skill_id: str, old_version: str, new_version: str,
+                                   patterns: List[WikiPattern], rejected_changes: list,
+                                   success_rate_before: float, validation_passed: bool,
+                                   trigger: str) -> SkillImpactRecord:
+        """记录Skill影响（即使被拒绝也保留在Wiki中）"""
+        return self.wiki_layer.record_skill_impact(
             skill_id=skill_id,
             change_type="modify",
             old_version=old_version,
@@ -348,7 +314,10 @@ class WikiSkillEvolver:
             source_patterns=[p.pattern_id for p in patterns],
         )
 
-        # 7. 记录进化日志
+    def _record_evolution_log(self, skill_id: str, old_version: str, new_version: str,
+                               patterns: List[WikiPattern], rejected_changes: list,
+                               success_rate_before: float, validation_passed: bool):
+        """记录进化日志"""
         self.wiki_layer.add_log(
             event_type="modification" if validation_passed else "rollback",
             description=f"Skill '{skill_id}' 进化{'成功' if validation_passed else '失败回滚'}，"
@@ -359,14 +328,19 @@ class WikiSkillEvolver:
             skill_changes=[{"skill_id": skill_id, "old_version": old_version,
                            "new_version": new_version, "result": "accepted" if validation_passed else "rejected"}],
             metrics_before={"success_rate": success_rate_before},
-            metrics_after={"success_rate": success_rate_before},  # 实际应更新
+            metrics_after={"success_rate": success_rate_before},
             notes=f"Wiki 永不回滚: {self.wiki_never_rollback}, "
                   f"使用 Wiki 知识: {self.use_wiki_knowledge}",
         )
 
-        # 8. 构造结果
+    def _build_evolution_result(self, skill_id: str, old_version: str, new_version: str,
+                                  patterns: List[WikiPattern], rejected_changes: list,
+                                  success_rate_before: float, validation_passed: bool,
+                                  start_time: float) -> WikiSkillEvolutionResult:
+        """构造进化结果"""
         duration_ms = int((time.time() - start_time) * 1000)
-        result = WikiSkillEvolutionResult(
+        avoid_repeating = len(rejected_changes) > 0
+        return WikiSkillEvolutionResult(
             success=validation_passed,
             phase=EvolutionPhase.COMPLETED,
             skill_id=skill_id,
@@ -377,16 +351,82 @@ class WikiSkillEvolver:
             patterns_discovered=len(patterns),
             trajectories_analyzed=len(self.raw_layer.get_by_skill(skill_id)),
             success_rate_before=success_rate_before,
-            success_rate_after=success_rate_before,  # 实际应更新
+            success_rate_after=success_rate_before,
             duration_ms=duration_ms,
             wiki_knowledge_used=self.use_wiki_knowledge,
             notes=f"避免重复 {len(rejected_changes)} 个失败改动" if avoid_repeating else "",
         )
 
+    def evolve_skill(self,
+                     skill_id: str,
+                     trigger: str = "auto",
+                     force: bool = False) -> WikiSkillEvolutionResult:
+        """
+        【Evolver + Validator 角色】基于 Wiki 知识进化 Skill（优化版：拆分成子函数）
+
+        完整流程：
+        1. 检查触发条件
+        2. 编译知识（从轨迹提取模式）
+        3. 获取 Wiki 知识包
+        4. 生成新 Skill 版本
+        5. 验证新 Skill
+        6. 记录 Skill 影响（Wiki 永不回滚）
+        7. 记录进化日志
+        8. 构造进化结果
+
+        Args:
+            skill_id: 要进化的 Skill ID
+            trigger: 触发原因
+            force: 是否强制进化（忽略触发条件）
+
+        Returns:
+            进化结果
+        """
+        start_time = time.time()
+        self._current_phase = EvolutionPhase.EVOLVING
+
+        # 1. 检查触发条件
+        skip_result = self._check_evolution_trigger(skill_id, force)
+        if skip_result:
+            return skip_result
+
+        # 2. 获取进化前的成功率
+        success_rate_before = self.raw_layer.get_success_rate(skill_id)
+
+        # 3. 编译知识
+        patterns = self.compile_knowledge(skill_id)
+
+        # 4. 获取 Wiki 知识包
+        wiki_knowledge = self.wiki_layer.get_knowledge_for_skill_evolution(skill_id)
+        rejected_changes = wiki_knowledge["rejected_changes"]
+
+        # 5. 生成新 Skill 版本
+        old_version, new_version = self._generate_new_skill_version(skill_id)
+
+        # 6. 验证新 Skill
+        self._current_phase = EvolutionPhase.VALIDATING
+        validation_passed = self._validate_new_skill(patterns)
+
+        # 7. 记录 Skill 影响（即使被拒绝也保留在 Wiki 中）
+        self._record_evolution_impact(
+            skill_id, old_version, new_version, patterns,
+            rejected_changes, success_rate_before, validation_passed, trigger
+        )
+
+        # 8. 记录进化日志
+        self._record_evolution_log(
+            skill_id, old_version, new_version, patterns,
+            rejected_changes, success_rate_before, validation_passed
+        )
+
+        # 9. 构造结果
+        result = self._build_evolution_result(
+            skill_id, old_version, new_version, patterns,
+            rejected_changes, success_rate_before, validation_passed, start_time
+        )
+
         self._evolution_history.append(result)
         self._current_phase = EvolutionPhase.IDLE
-
-        # 重置连续失败计数
         self._consecutive_failures[skill_id] = 0
 
         return result

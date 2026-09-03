@@ -130,6 +130,7 @@ class RawLayer:
         self._persist_path = persist_path
         self._total_recorded = 0
         self._tamper_detected = 0
+        self._error_log: List[Dict[str, Any]] = []  # 错误日志（持久化/加载失败等）
 
         # 如果有持久化路径，尝试加载
         if persist_path:
@@ -293,6 +294,7 @@ class RawLayer:
             "failure": failures,
             "success_rate": successes / total if total > 0 else 0.0,
             "tamper_detected": self._tamper_detected,
+            "error_log_count": len(self._error_log),
             "skill_stats": skill_stats,
             "error_type_stats": error_type_stats,
         }
@@ -305,8 +307,13 @@ class RawLayer:
             data = [t.to_dict() for t in self._trajectories]
             with open(self._persist_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass  # 持久化失败不影响主流程
+        except Exception as e:
+            self._error_log.append({
+                "type": "save_failed",
+                "error": str(e),
+                "path": self._persist_path,
+                "timestamp": time.time(),
+            })
 
     def _load_from_file(self):
         """从文件加载"""
@@ -320,11 +327,22 @@ class RawLayer:
                 trajectory._hash = item.get('_hash', '')
                 self._trajectories.append(trajectory)
             self._total_recorded = len(self._trajectories)
-        except Exception:
-            pass  # 加载失败不影响主流程
+        except Exception as e:
+            self._error_log.append({
+                "type": "load_failed",
+                "error": str(e),
+                "path": self._persist_path,
+                "timestamp": time.time(),
+            })
 
     def clear(self):
         """清空所有轨迹（谨慎使用）"""
         self._trajectories.clear()
         self._total_recorded = 0
         self._tamper_detected = 0
+        self._error_log.clear()
+
+    def get_error_log(self) -> List[Dict[str, Any]]:
+        """获取错误日志（持久化/加载失败等）"""
+        return list(self._error_log)
+        self._error_log: List[Dict[str, Any]] = []  # 错误日志（持久化/加载失败等）

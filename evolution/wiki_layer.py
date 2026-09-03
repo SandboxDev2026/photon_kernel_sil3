@@ -432,25 +432,10 @@ class WikiLayer:
         """开始新一轮迭代"""
         self._iteration += 1
 
-    def compile_from_trajectories(self, trajectories: List[Any]) -> List[WikiPattern]:
-        """
-        从原始轨迹编译知识
-
-        分析失败轨迹，提取失败模式；分析成功轨迹，提取成功策略。
-
-        Args:
-            trajectories: RawTrajectory 列表
-
-        Returns:
-            新发现的模式列表
-        """
-        self._total_compilations += 1
+    def _compile_failure_patterns(self, failures: List[Any]) -> List[WikiPattern]:
+        """分析失败轨迹，提取失败模式"""
         new_patterns = []
-
-        # 分析失败轨迹
-        failures = [t for t in trajectories if not t.success]
         for failure in failures:
-            # 根据错误类型提取模式
             if failure.error_type:
                 title = f"{failure.error_type} 错误（{failure.skill_id}）"
                 pattern = self.add_pattern(
@@ -466,31 +451,60 @@ class WikiLayer:
                 )
                 if pattern.occurrence_count == 1:
                     new_patterns.append(pattern)
+        return new_patterns
 
-        # 分析成功轨迹（提取成功策略）
+    def _compile_success_patterns(self, successes: List[Any]) -> List[WikiPattern]:
+        """分析成功轨迹，提取成功策略"""
+        new_patterns = []
+        if not successes:
+            return new_patterns
+
+        # 统计高成功率的 Skill
+        skill_success: Dict[str, int] = {}
+        for s in successes:
+            skill_success[s.skill_id] = skill_success.get(s.skill_id, 0) + 1
+
+        for skill_id, count in skill_success.items():
+            if count >= 3:  # 至少成功3次才记录为成功策略
+                title = f"{skill_id} 成功策略（{count}次成功）"
+                pattern = self.add_pattern(
+                    title=title,
+                    pattern_type=PatternType.SUCCESS_PATTERN,
+                    severity=PatternSeverity.LOW,
+                    description=f"Skill '{skill_id}' 已成功执行 {count} 次",
+                    root_cause="该 Skill 的当前实现有效",
+                    fix_strategy="保持当前实现，可作为其他 Skill 的参考",
+                    affected_skills=[skill_id],
+                    source_trajectories=[s.trajectory_id for s in successes if s.skill_id == skill_id][:5],
+                    tags=["success", skill_id],
+                )
+                if pattern.occurrence_count == 1:
+                    new_patterns.append(pattern)
+        return new_patterns
+
+    def compile_from_trajectories(self, trajectories: List[Any]) -> List[WikiPattern]:
+        """
+        从原始轨迹编译知识（优化版：拆分成子函数）
+
+        分析失败轨迹，提取失败模式；分析成功轨迹，提取成功策略。
+
+        Args:
+            trajectories: RawTrajectory 列表
+
+        Returns:
+            新发现的模式列表
+        """
+        self._total_compilations += 1
+
+        # 分析失败轨迹
+        failures = [t for t in trajectories if not t.success]
+        failure_patterns = self._compile_failure_patterns(failures)
+
+        # 分析成功轨迹
         successes = [t for t in trajectories if t.success]
-        if successes:
-            # 统计高成功率的 Skill
-            skill_success: Dict[str, int] = {}
-            for s in successes:
-                skill_success[s.skill_id] = skill_success.get(s.skill_id, 0) + 1
+        success_patterns = self._compile_success_patterns(successes)
 
-            for skill_id, count in skill_success.items():
-                if count >= 3:  # 至少成功3次才记录为成功策略
-                    title = f"{skill_id} 成功策略（{count}次成功）"
-                    pattern = self.add_pattern(
-                        title=title,
-                        pattern_type=PatternType.SUCCESS_PATTERN,
-                        severity=PatternSeverity.LOW,
-                        description=f"Skill '{skill_id}' 已成功执行 {count} 次",
-                        root_cause="该 Skill 的当前实现有效",
-                        fix_strategy="保持当前实现，可作为其他 Skill 的参考",
-                        affected_skills=[skill_id],
-                        source_trajectories=[s.trajectory_id for s in successes if s.skill_id == skill_id][:5],
-                        tags=["success", skill_id],
-                    )
-                    if pattern.occurrence_count == 1:
-                        new_patterns.append(pattern)
+        new_patterns = failure_patterns + success_patterns
 
         # 记录编译日志
         if new_patterns:
