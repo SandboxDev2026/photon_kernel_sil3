@@ -186,6 +186,133 @@ class InferenceMetrics:
             self._vram_fragmentation = max(0.0, min(100.0, vram_fragmentation))
             self._gpu_utilization = max(0.0, min(100.0, gpu_util))
 
+    def _calculate_basic_stats(self, snapshot: MetricSnapshot, window_requests: list, elapsed: float):
+        """计算基础统计（请求数、成功率、错误率、QPS）"""
+        snapshot.total_requests = len(window_requests)
+        snapshot.success_count = sum(1 for r in window_requests if r.success)
+        snapshot.error_count = snapshot.total_requests - snapshot.success_count
+        snapshot.error_rate = snapshot.error_count / snapshot.total_requests * 100
+
+        # QPS
+        if elapsed > 0:
+            snapshot.qps = snapshot.total_requests / elapsed
+
+    def _calculate_latency_stats(self, snapshot: MetricSnapshot, window_requests: list):
+        """计算延迟统计（avg/p50/p95/p99 + 首Token延迟）"""
+        # 延迟统计
+        latencies = sorted([r.latency_ms for r in window_requests])
+        snapshot.avg_latency_ms = sum(latencies) / len(latencies)
+        snapshot.p50_latency_ms = self._percentile(latencies, 50)
+        snapshot.p95_latency_ms = self._percentile(latencies, 95)
+        snapshot.p99_latency_ms = self._percentile(latencies, 99)
+
+        # 首Token延迟
+        ttfts = sorted([r.ttft_ms for r in window_requests])
+        snapshot.avg_ttft_ms = sum(ttfts) / len(ttfts)
+        snapshot.p95_ttft_ms = self._percentile(ttfts, 95)
+
+    def _calculate_token_stats(self, snapshot: MetricSnapshot, window_requests: list, elapsed: float):
+        """计算Token吞吐量统计"""
+        total_input = sum(r.input_tokens for r in window_requests)
+        total_output = sum(r.output_tokens for r in window_requests)
+        total_latency_sec = sum(r.latency_ms for r in window_requests) / 1000
+
+        if total_latency_sec > 0:
+            snapshot.token_generation_speed = total_output / total_latency_sec
+            snapshot.input_throughput = total_input / elapsed if elapsed > 0 else 0
+            snapshot.output_throughput = total_output / elapsed if elapsed > 0 else 0
+
+    def _fill_realtime_metrics(self, snapshot: MetricSnapshot):
+        """填充实时指标（活跃请求、队列深度、VRAM、GPU利用率）"""
+        snapshot.active_requests = self._active_requests
+        snapshot.queue_depth = self._queue_depth
+        snapshot.vram_usage_gb = self._vram_usage_gb
+        snapshot.vram_total_gb = self._vram_total_gb
+        snapshot.vram_fragmentation_rate = self._vram_fragmentation
+        snapshot.gpu_utilization = self._gpu_utilization
+
+    def get_snapshot(self) -> MetricSnapshot:
+        """获取指标快照（滑动窗口内的统计）（优化版：拆分为4个子函数）"""
+        with self._lock:
+            now = time.time()
+            cutoff = now - self.window_seconds
+
+            # 过滤窗口内的请求
+            window_requests = [r for r in self._requests if r.timestamp >= cutoff]
+
+            snapshot = MetricSnapshot(timestamp=now)
+
+            if not window_requests:
+                self._fill_realtime_metrics(snapshot)
+                return snapshot
+
+            elapsed = min(self.window_seconds, now - window_requests[0].timestamp)
+
+            # 1. 基础统计
+            self._calculate_basic_stats(snapshot, window_requests, elapsed)
+
+            # 2. 延迟统计
+            self._calculate_latency_stats(snapshot, window_requests)
+
+            # 3. Token吞吐量统计
+            self._calculate_token_stats(snapshot, window_requests, elapsed)
+
+            # 4. 实时指标
+            self._fill_realtime_metrics(snapshot)
+
+            return snapshot
+
+    def record_request(self, latency_ms: float, ttft_ms: float,
+                       input_tokens: int, output_tokens: int,
+                       success: bool, error_type: str = "",
+                       queue_depth: int = 0) -> None:
+        """记录一个请求"""
+        record = RequestRecord(
+            timestamp=time.time(),
+            latency_ms=latency_ms,
+            ttft_ms=ttft_ms,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            success=success,
+            error_type=error_type,
+            queue_depth=queue_depth,
+        )
+
+        with self._lock:
+            self._requests.append(record)
+            self._total_requests += 1
+            self._total_input_tokens += input_tokens
+            self._total_output_tokens += output_tokens
+            if success:
+                self._total_success += 1
+            else:
+                self._total_errors += 1
+
+    def start_request(self) -> None:
+        """开始一个请求（增加活跃请求数）"""
+        with self._lock:
+            self._active_requests += 1
+
+    def end_request(self) -> None:
+        """结束一个请求（减少活跃请求数）"""
+        with self._lock:
+            if self._active_requests > 0:
+                self._active_requests -= 1
+
+    def update_queue_depth(self, depth: int) -> None:
+        """更新请求队列深度"""
+        with self._lock:
+            self._queue_depth = max(0, depth)
+
+    def update_gpu(self, vram_usage_gb: float, vram_total_gb: float,
+                   vram_fragmentation: float, gpu_util: float) -> None:
+        """更新GPU指标"""
+        with self._lock:
+            self._vram_usage_gb = max(0.0, vram_usage_gb)
+            self._vram_total_gb = max(0.0, vram_total_gb)
+            self._vram_fragmentation = max(0.0, min(100.0, vram_fragmentation))
+            self._gpu_utilization = max(0.0, min(100.0, gpu_util))
+
     def get_snapshot(self) -> MetricSnapshot:
         """获取指标快照（滑动窗口内的统计）"""
         with self._lock:

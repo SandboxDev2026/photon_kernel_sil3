@@ -96,6 +96,8 @@ class SkillEvolver:
         self.evolution_events: List[SkillEvolutionEvent] = []
         # 进化冷却时间（防止频繁进化同一个 Skill）
         self.last_evolution_time: Dict[str, float] = {}
+        # 错误日志
+        self._error_log: List[Dict[str, Any]] = []
 
     # ==================== 闭环步骤 1：任务执行 ====================
 
@@ -215,42 +217,23 @@ class SkillEvolver:
 
     # ==================== 闭环步骤 4：修改/生成 Skill ====================
 
-    def evolve_skill(self, skill_id: str, trigger: str = "auto") -> Optional[SkillEvolutionEvent]:
-        """
-        执行 Skill 进化（完整闭环）
-
-        Returns:
-            SkillEvolutionEvent: 进化事件（如果触发了进化）
-        """
-        should, reason = self.should_evolve(skill_id)
-        if not should:
-            return None
-
+    def _create_evolution_event(self, skill_id: str, reason: str) -> Optional[SkillEvolutionEvent]:
+        """创建进化事件（检查触发条件和Skill是否存在）"""
         skill = self.library.get(skill_id)
         if not skill:
             return None
 
-        event = SkillEvolutionEvent(
+        return SkillEvolutionEvent(
             trigger=reason,
             skill_id=skill_id,
             old_version=skill.version,
             success_before=skill.success_rate,
         )
 
-        # 步骤 3：反思
-        event.reflection = self.reflect(skill_id)
-
-        # 步骤 4：生成改进后的 Skill 代码
-        improved_code = self._generate_improved_skill(skill, event.reflection)
-
-        # 安全门控
-        if not self.security_gate(improved_code):
-            event.action = "rejected_by_security_gate"
-            self.evolution_events.append(event)
-            return event
-
+    def _apply_skill_evolution(self, skill: Any, improved_code: str, event: SkillEvolutionEvent) -> bool:
+        """应用技能进化（修改现有Skill或创建新Skill）"""
         # 步骤 5：存入技能库（版本管理）
-        new_skill = self.library.evolve_skill(skill_id, improved_code, mutation_type="auto_evolve")
+        new_skill = self.library.evolve_skill(skill.id, improved_code, mutation_type="auto_evolve")
         if new_skill:
             event.action = "modify"
             event.new_version = new_skill.version
@@ -267,9 +250,44 @@ class SkillEvolver:
             event.new_version = new_skill.version
 
         # 记录进化时间（冷却）
-        self.last_evolution_time[skill_id] = time.time()
+        self.last_evolution_time[skill.id] = time.time()
         # 重置失败计数
-        self.consecutive_failures[skill_id] = 0
+        self.consecutive_failures[skill.id] = 0
+
+        return True
+
+    def evolve_skill(self, skill_id: str, trigger: str = "auto") -> Optional[SkillEvolutionEvent]:
+        """
+        执行 Skill 进化（完整闭环）（优化版：拆分为2个子函数）
+
+        Returns:
+            SkillEvolutionEvent: 进化事件（如果触发了进化）
+        """
+        should, reason = self.should_evolve(skill_id)
+        if not should:
+            return None
+
+        # 1. 创建进化事件
+        event = self._create_evolution_event(skill_id, reason)
+        if not event:
+            return None
+
+        skill = self.library.get(skill_id)
+
+        # 步骤 3：反思
+        event.reflection = self.reflect(skill_id)
+
+        # 步骤 4：生成改进后的 Skill 代码
+        improved_code = self._generate_improved_skill(skill, event.reflection)
+
+        # 安全门控
+        if not self.security_gate(improved_code):
+            event.action = "rejected_by_security_gate"
+            self.evolution_events.append(event)
+            return event
+
+        # 步骤 5：应用技能进化（修改或创建）
+        self._apply_skill_evolution(skill, improved_code, event)
 
         self.evolution_events.append(event)
         return event
@@ -282,8 +300,15 @@ class SkillEvolver:
             # 简单验证：代码非空且包含 def 或 class
             if improved and ("def " in improved or "class " in improved or "return" in improved):
                 return improved
-        except Exception:
-            pass
+        except Exception as e:
+            # LLM调用失败，记录错误并退化返回原代码
+            if hasattr(self, '_error_log'):
+                self._error_log.append({
+                    "type": "llm_generation_failed",
+                    "error": str(e),
+                    "skill_id": skill.id,
+                    "timestamp": time.time(),
+                })
         # 退化：返回原代码
         return skill.code
 
