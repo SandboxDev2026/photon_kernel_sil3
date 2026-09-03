@@ -259,13 +259,107 @@ class MonitorDashboard:
         .threshold-info li {{ padding: 4px 0; }}
         """
 
+    def _render_business_impact_css(self) -> str:
+        """渲染业务影响面面板CSS"""
+        return """
+        .business-impact-panel {
+            background: linear-gradient(135deg, #0d1526 0%, #131d33 100%);
+            border: 1px solid #1e2d4a;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .business-impact-panel h3 {
+            color: #00d4ff;
+            margin-bottom: 15px;
+            font-size: 16px;
+        }
+        .impact-metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .impact-metric-card {
+            background: #0a1220;
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+        }
+        .impact-metric-label {
+            font-size: 12px;
+            color: #6b7280;
+            margin-bottom: 8px;
+        }
+        .impact-metric-value {
+            font-size: 28px;
+            font-weight: bold;
+            color: #00ff88;
+        }
+        .impact-metric-value.warning { color: #ffaa00; }
+        .impact-metric-value.critical { color: #ff4444; }
+        .impact-metric-unit {
+            font-size: 14px;
+            color: #6b7280;
+        }
+        .impact-progress-bar {
+            height: 8px;
+            background: #1a2540;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 10px;
+        }
+        .impact-progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00ff88, #00d4ff);
+            border-radius: 4px;
+        }
+        .impact-progress-fill.warning { background: linear-gradient(90deg, #ffaa00, #ff8800); }
+        .impact-progress-fill.critical { background: linear-gradient(90deg, #ff4444, #ff0000); }
+        .impact-compliance-badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-left: 10px;
+        }
+        .impact-compliance-badge.compliant {
+            background: rgba(0, 255, 136, 0.15);
+            color: #00ff88;
+            border: 1px solid #00ff88;
+        }
+        .impact-compliance-badge.violation {
+            background: rgba(255, 68, 68, 0.15);
+            color: #ff4444;
+            border: 1px solid #ff4444;
+        }
+        .impact-details-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .impact-detail-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 8px 12px;
+            background: #0a1220;
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        .impact-detail-label { color: #6b7280; }
+        .impact-detail-value { color: #e0e6f0; font-weight: 500; }
+        """
+
     def _render_css(self) -> str:
         """渲染CSS样式（优化版：拆分为4个子函数组合）"""
         return (
             self._render_base_css() +
             self._render_header_css() +
             self._render_metrics_css() +
-            self._render_alerts_css()
+            self._render_alerts_css() +
+            self._render_business_impact_css()
         )
 
     def _render_header(self, health_color: str, health_text: str, alert_summary: Dict[str, int]) -> str:
@@ -314,6 +408,90 @@ class MonitorDashboard:
             items += f'<div class="node-item"><span class="node-status" style="background:{status_color}"></span><span class="node-name">{node.get("name", "unknown")}</span><span class="node-ip">{node.get("ip", "")}</span><span class="node-pods">Pods: {node.get("pods", 0)}</span></div>'
         return f'<div class="panel"><div class="panel-title">集群节点</div><div class="node-list">{items}</div></div>'
 
+    def _render_business_impact_panel(self) -> str:
+        """渲染业务影响面面板（第十三条）"""
+        impact_data = getattr(self, '_business_impact_data', None)
+        if not impact_data:
+            impact_data = {
+                "current_impact_percent": 0.0,
+                "threshold_percent": 5.0,
+                "light_pool_impact_percent": 0.0,
+                "strong_pool_impact_percent": 0.0,
+                "total_events_window": 0,
+                "active_unrecovered_events": 0,
+                "total_affected_requests": 0,
+                "avg_recovery_time_ms": 0,
+                "alerts": 0,
+                "compliant": True,
+            }
+
+        current = impact_data.get("current_impact_percent", 0.0)
+        threshold = impact_data.get("threshold_percent", 5.0)
+        compliant = impact_data.get("compliant", True)
+
+        if current > threshold * 2:
+            status_class = "critical"
+        elif current > threshold:
+            status_class = "warning"
+        else:
+            status_class = ""
+
+        max_display = threshold * 2
+        progress_width = min((current / max_display) * 100, 100)
+        badge_class = "compliant" if compliant else "violation"
+        badge_text = "合规" if compliant else "违规"
+
+        return f"""
+    <div class="business-impact-panel">
+        <h3>业务影响面监控（第十三条）
+            <span class="impact-compliance-badge {badge_class}">{badge_text}</span>
+        </h3>
+        <div class="impact-metrics-grid">
+            <div class="impact-metric-card">
+                <div class="impact-metric-label">当前业务影响面</div>
+                <div class="impact-metric-value {status_class}">{current:.2f}<span class="impact-metric-unit">%</span></div>
+                <div class="impact-progress-bar">
+                    <div class="impact-progress-fill {status_class}" style="width: {progress_width:.1f}%"></div>
+                </div>
+            </div>
+            <div class="impact-metric-card">
+                <div class="impact-metric-label">LightPool 影响面</div>
+                <div class="impact-metric-value">{impact_data.get("light_pool_impact_percent", 0):.2f}<span class="impact-metric-unit">%</span></div>
+            </div>
+            <div class="impact-metric-card">
+                <div class="impact-metric-label">StrongPool 影响面</div>
+                <div class="impact-metric-value">{impact_data.get("strong_pool_impact_percent", 0):.2f}<span class="impact-metric-unit">%</span></div>
+            </div>
+            <div class="impact-metric-card">
+                <div class="impact-metric-label">未恢复事件</div>
+                <div class="impact-metric-value {'critical' if impact_data.get('active_unrecovered_events', 0) > 0 else ''}">{impact_data.get("active_unrecovered_events", 0)}</div>
+            </div>
+        </div>
+        <div class="impact-details-grid">
+            <div class="impact-detail-item">
+                <span class="impact-detail-label">窗口内事件总数</span>
+                <span class="impact-detail-value">{impact_data.get("total_events_window", 0)}</span>
+            </div>
+            <div class="impact-detail-item">
+                <span class="impact-detail-label">受影响请求总数</span>
+                <span class="impact-detail-value">{impact_data.get("total_affected_requests", 0)}</span>
+            </div>
+            <div class="impact-detail-item">
+                <span class="impact-detail-label">平均恢复时间</span>
+                <span class="impact-detail-value">{impact_data.get("avg_recovery_time_ms", 0):.0f} ms</span>
+            </div>
+            <div class="impact-detail-item">
+                <span class="impact-detail-label">告警数</span>
+                <span class="impact-detail-value {'critical' if impact_data.get('alerts', 0) > 0 else ''}">{impact_data.get("alerts", 0)}</span>
+            </div>
+        </div>
+    </div>
+"""
+
+    def set_business_impact_data(self, data: Dict[str, Any]) -> None:
+        """设置业务影响面数据（由BusinessImpactTracker.get_impact_summary()提供）"""
+        self._business_impact_data = data
+
     def _render_threshold_info(self) -> str:
         """渲染阈值信息"""
         return f'''
@@ -342,6 +520,7 @@ class MonitorDashboard:
         css = self._render_css()
         header = self._render_header(health_color, health_text, alert_summary)
         metric_cards = self._render_metric_cards()
+        business_impact = self._render_business_impact_panel()
         alert_list = self._render_alert_list()
         node_list = self._render_node_list()
         threshold_info = self._render_threshold_info()
@@ -357,6 +536,7 @@ class MonitorDashboard:
     {header}
     <div class="main">
         {metric_cards}
+        {business_impact}
         {alert_list}
         {node_list}
         {threshold_info}
