@@ -22,6 +22,7 @@ from evolution.leader_teammate import (
     LeaderAgent, TeammateAgent, AgentRole, AgentStatus, AgentPermission,
     SharedWorkspace, TaskResult, LoopPhase
 )
+from evolution.island_ga import AdaptiveMutationController
 from evolution.sandbox_resource_plugin import (
     SandboxResourcePlugin, ResourceType, ResourceCapacity,
     ResourceHealth, CapabilityDetector, NodeCapability
@@ -427,5 +428,111 @@ class TestSandboxResourcePlugin(unittest.TestCase):
         self.assertEqual(capacity.available, 75)
 
 
+class TestAdaptiveMutationController(unittest.TestCase):
+    """自适应变异算子控制器测试（借鉴Grounded Agent Forge）"""
+
+    def setUp(self):
+        self.controller = AdaptiveMutationController(
+            initial_mutation_rate=0.3,
+            initial_crossover_rate=0.7,
+            stagnation_threshold=3,
+            novelty_search_threshold=5,
+            adaptation_rate=0.1,
+        )
+
+    def test_controller_initialization(self):
+        """测试控制器初始化参数"""
+        params = self.controller.get_current_params()
+        self.assertEqual(params["mutation_rate"], 0.3)
+        self.assertEqual(params["crossover_rate"], 0.7)
+        self.assertEqual(params["stagnation_count"], 0)
+        self.assertFalse(params["novelty_search_enabled"])
+
+    def test_evolution_phase_decreases_mutation(self):
+        """测试进化阶段降低变异率"""
+        # 模拟适应度持续提升
+        fitnesses = [0.1, 0.2, 0.3, 0.4, 0.5]
+        for f in fitnesses:
+            self.controller.update(f)
+        params = self.controller.get_current_params()
+        # 进化阶段应该降低变异率
+        self.assertLess(params["mutation_rate"], 0.3)
+        self.assertGreater(params["crossover_rate"], 0.7)
+
+    def test_stagnation_phase_increases_mutation(self):
+        """测试停滞阶段提高变异率"""
+        # 模拟适应度停滞（连续相同值）
+        for _ in range(5):
+            self.controller.update(0.5)
+        params = self.controller.get_current_params()
+        # 停滞阶段应该提高变异率
+        self.assertGreater(params["mutation_rate"], 0.3)
+        self.assertLess(params["crossover_rate"], 0.7)
+
+    def test_novelty_search_triggered(self):
+        """测试长期停滞触发新奇搜索"""
+        # 模拟长期停滞（超过novelty_search_threshold）
+        for _ in range(6):
+            result = self.controller.update(0.5)
+        params = self.controller.get_current_params()
+        self.assertTrue(params["novelty_search_enabled"])
+        # 新奇搜索应该将变异率设为最大值
+        self.assertEqual(params["mutation_rate"], self.controller.max_mutation_rate)
+
+    def test_mutation_rate_bounds(self):
+        """测试变异率边界限制"""
+        # 极端停滞
+        for _ in range(20):
+            self.controller.update(0.5)
+        params = self.controller.get_current_params()
+        self.assertLessEqual(params["mutation_rate"], self.controller.max_mutation_rate)
+        self.assertGreaterEqual(params["mutation_rate"], self.controller.min_mutation_rate)
+
+    def test_adjustment_history_recorded(self):
+        """测试调整历史记录"""
+        for i in range(5):
+            self.controller.update(0.1 * i)
+        params = self.controller.get_current_params()
+        self.assertEqual(params["total_adjustments"], 5)
+        self.assertEqual(len(self.controller.adjustment_history), 5)
+
+    def test_reset_clears_state(self):
+        """测试重置清除状态"""
+        for _ in range(5):
+            self.controller.update(0.5)
+        self.controller.reset()
+        params = self.controller.get_current_params()
+        self.assertEqual(params["stagnation_count"], 0)
+        self.assertFalse(params["novelty_search_enabled"])
+        self.assertEqual(params["total_adjustments"], 0)
+
+    def test_stagnation_detection_threshold(self):
+        """测试停滞检测阈值"""
+        # 前3代提升，不应该判定停滞
+        self.controller.update(0.1)
+        self.controller.update(0.2)
+        self.controller.update(0.3)
+        self.assertEqual(self.controller.stagnation_count, 0)
+
+        # 接下来3代停滞，应该开始计数
+        self.controller.update(0.3)
+        self.controller.update(0.3)
+        self.controller.update(0.3)
+        self.assertGreater(self.controller.stagnation_count, 0)
+
+    def test_update_returns_adjustment_info(self):
+        """测试update返回调整信息"""
+        result = self.controller.update(0.5)
+        self.assertIn("new_mutation_rate", result)
+        self.assertIn("new_crossover_rate", result)
+        self.assertIn("action", result)
+        self.assertIn("is_stagnant", result)
+        self.assertIn("generation", result)
+        self.assertIn("current_best_fitness", result)
+    unittest.main()
+
+
 if __name__ == '__main__':
+
+
     unittest.main()

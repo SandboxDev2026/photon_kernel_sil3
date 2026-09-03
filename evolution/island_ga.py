@@ -144,3 +144,182 @@ class IslandGA:
                 break
 
         return self.get_global_best()
+
+
+class AdaptiveMutationController:
+    """
+    自适应变异算子控制器（借鉴 Grounded Agent Forge）
+
+    核心思想：进化算子本身也会进化，动态调整变异/交叉概率。
+    - 种群快速进化时：降低变异率，提高交叉率（利用已有好基因）
+    - 种群停滞时：提高变异率，降低交叉率（鼓励探索）
+    - 长期停滞时：切换新奇搜索模式（novelty search）
+
+    参考：Grounded Agent Forge 的元进化策略优化器，动态调整变异/交叉算子概率，
+    当种群停滞自动切换新奇搜索，解决GA早熟收敛问题。
+    """
+
+    def __init__(
+        self,
+        initial_mutation_rate: float = 0.3,
+        initial_crossover_rate: float = 0.7,
+        min_mutation_rate: float = 0.05,
+        max_mutation_rate: float = 0.8,
+        stagnation_threshold: int = 5,
+        novelty_search_threshold: int = 10,
+        adaptation_rate: float = 0.1,
+    ):
+        """
+        初始化自适应变异控制器
+
+        Args:
+            initial_mutation_rate: 初始变异率
+            initial_crossover_rate: 初始交叉率
+            min_mutation_rate: 最小变异率
+            max_mutation_rate: 最大变异率
+            stagnation_threshold: 停滞判定阈值（连续N代无提升）
+            novelty_search_threshold: 新奇搜索触发阈值（连续N代停滞）
+            adaptation_rate: 适应率（每次调整的幅度）
+        """
+        self.mutation_rate = initial_mutation_rate
+        self.crossover_rate = initial_crossover_rate
+        self.min_mutation_rate = min_mutation_rate
+        self.max_mutation_rate = max_mutation_rate
+        self.stagnation_threshold = stagnation_threshold
+        self.novelty_search_threshold = novelty_search_threshold
+        self.adaptation_rate = adaptation_rate
+
+        # 状态跟踪
+        self.best_fitness_history: List[float] = []
+        self.stagnation_count = 0
+        self.novelty_search_enabled = False
+        self.adjustment_history: List[Dict[str, Any]] = []
+
+    def update(self, current_best_fitness: float) -> Dict[str, Any]:
+        """
+        根据当前种群最佳适应度更新算子参数
+
+        Args:
+            current_best_fitness: 当前种群最佳适应度
+
+        Returns:
+            调整结果字典，包含新的变异率、交叉率、是否触发新奇搜索
+        """
+        self.best_fitness_history.append(current_best_fitness)
+
+        # 检测停滞
+        is_stagnant = self._detect_stagnation()
+        if is_stagnant:
+            self.stagnation_count += 1
+        else:
+            self.stagnation_count = 0
+            self.novelty_search_enabled = False
+
+        # 调整算子
+        adjustment = self._adjust_operators(is_stagnant)
+
+        # 检测是否触发新奇搜索
+        if self.stagnation_count >= self.novelty_search_threshold:
+            self.novelty_search_enabled = True
+            adjustment["novelty_search_triggered"] = True
+            adjustment["action"] = "启用新奇搜索模式，大幅提高变异率"
+            self._trigger_novelty_search()
+        else:
+            adjustment["novelty_search_triggered"] = False
+
+        # 记录调整历史
+        adjustment["generation"] = len(self.best_fitness_history)
+        adjustment["current_best_fitness"] = current_best_fitness
+        adjustment["stagnation_count"] = self.stagnation_count
+        self.adjustment_history.append(adjustment)
+
+        return adjustment
+
+    def _detect_stagnation(self) -> bool:
+        """
+        检测种群是否停滞
+
+        判定标准：最近 stagnation_threshold 代的最佳适应度提升小于 1%
+        """
+        if len(self.best_fitness_history) < self.stagnation_threshold + 1:
+            return False
+
+        recent = self.best_fitness_history[-(self.stagnation_threshold + 1):]
+        oldest = recent[0]
+        newest = recent[-1]
+
+        if oldest <= 0:
+            return newest <= oldest
+
+        improvement = (newest - oldest) / abs(oldest)
+        return improvement < 0.01  # 提升小于1%判定为停滞
+
+    def _adjust_operators(self, is_stagnant: bool) -> Dict[str, Any]:
+        """
+        调整变异/交叉算子概率
+
+        - 停滞时：提高变异率，降低交叉率（鼓励探索）
+        - 进化时：降低变异率，提高交叉率（利用已有好基因）
+        """
+        old_mutation = self.mutation_rate
+        old_crossover = self.crossover_rate
+
+        if is_stagnant:
+            # 停滞：提高变异率
+            self.mutation_rate = min(
+                self.max_mutation_rate,
+                self.mutation_rate + self.adaptation_rate
+            )
+            self.crossover_rate = max(
+                0.3,
+                self.crossover_rate - self.adaptation_rate
+            )
+            action = "种群停滞，提高变异率鼓励探索"
+        else:
+            # 进化：降低变异率
+            self.mutation_rate = max(
+                self.min_mutation_rate,
+                self.mutation_rate - self.adaptation_rate * 0.5
+            )
+            self.crossover_rate = min(
+                0.9,
+                self.crossover_rate + self.adaptation_rate * 0.5
+            )
+            action = "种群进化中，降低变异率利用好基因"
+
+        return {
+            "old_mutation_rate": old_mutation,
+            "new_mutation_rate": self.mutation_rate,
+            "old_crossover_rate": old_crossover,
+            "new_crossover_rate": self.crossover_rate,
+            "action": action,
+            "is_stagnant": is_stagnant,
+        }
+
+    def _trigger_novelty_search(self) -> None:
+        """
+        触发新奇搜索模式
+
+        当种群长期停滞时，大幅提高变异率，鼓励探索新的行为模式，
+        而不是继续在局部最优附近微调。
+        """
+        self.mutation_rate = self.max_mutation_rate
+        self.crossover_rate = 0.3  # 降低交叉率，鼓励独立探索
+
+    def get_current_params(self) -> Dict[str, Any]:
+        """获取当前算子参数"""
+        return {
+            "mutation_rate": self.mutation_rate,
+            "crossover_rate": self.crossover_rate,
+            "stagnation_count": self.stagnation_count,
+            "novelty_search_enabled": self.novelty_search_enabled,
+            "best_fitness_history_length": len(self.best_fitness_history),
+            "total_adjustments": len(self.adjustment_history),
+        }
+
+    def reset(self) -> None:
+        """重置控制器状态"""
+        self.best_fitness_history = []
+        self.stagnation_count = 0
+        self.novelty_search_enabled = False
+        self.adjustment_history = []

@@ -126,30 +126,53 @@ class TopologyAwareScheduler:
         1. 如果有偏好节点且资源充足，优先选择
         2. 否则选择可用资源最多的节点
         3. 考虑跨 NUMA 延迟（如果是 Gang 的一部分）
+
+        拆分为偏好节点检查和最佳节点搜索两个子函数。
         """
         with self._lock:
             if not self.numa_nodes:
                 return None
 
             # 偏好节点优先
-            if instance.preferred_numa_node is not None:
-                node = self.numa_nodes.get(instance.preferred_numa_node)
-                if node and self._node_has_capacity(node, instance):
-                    return instance.preferred_numa_node
+            preferred = self._check_preferred_node(instance)
+            if preferred is not None:
+                return preferred
 
             # 选择可用资源最多的节点
-            best_node = None
-            best_score = -1
-            for node_id, node in self.numa_nodes.items():
-                if not self._node_has_capacity(node, instance):
-                    continue
-                # 评分：可用内存 + 可用CPU
-                score = node.available_memory_mb + len(node.cpu_cores) * 100
-                if score > best_score:
-                    best_score = score
-                    best_node = node_id
+            return self._find_best_node_by_score(instance)
 
-            return best_node
+    def _check_preferred_node(self, instance: SandboxInstance) -> Optional[int]:
+        """
+        检查偏好节点是否可用
+
+        如果实例有偏好的 NUMA 节点且该节点资源充足，返回该节点 ID；
+        否则返回 None，表示需要搜索其他节点。
+        """
+        if instance.preferred_numa_node is not None:
+            node = self.numa_nodes.get(instance.preferred_numa_node)
+            if node and self._node_has_capacity(node, instance):
+                return instance.preferred_numa_node
+        return None
+
+    def _find_best_node_by_score(self, instance: SandboxInstance) -> Optional[int]:
+        """
+        按评分找到最佳 NUMA 节点
+
+        遍历所有可用节点，计算评分（可用内存 + 可用CPU），
+        返回评分最高的节点 ID。无可用节点时返回 None。
+        """
+        best_node = None
+        best_score = -1
+        for node_id, node in self.numa_nodes.items():
+            if not self._node_has_capacity(node, instance):
+                continue
+            # 评分：可用内存 + 可用CPU
+            score = node.available_memory_mb + len(node.cpu_cores) * 100
+            if score > best_score:
+                best_score = score
+                best_node = node_id
+
+        return best_node
 
     def find_best_numa_placement(self, instances: List[SandboxInstance]) -> Dict[str, Optional[int]]:
         """

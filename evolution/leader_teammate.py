@@ -331,17 +331,45 @@ class LeaderAgent:
         执行 Inner Loop（单 Agent 执行循环）
 
         阶段：OBSERVE → REASON → ACT → VERIFY
-        拆分为多个子函数，每个子函数负责一个阶段或职责。
+        拆分为验证和阶段执行两个子函数，主函数只负责调度。
+        """
+        # 验证 teammate 存在性
+        teammate, error_result = self._validate_teammate_for_inner_loop(agent_id, subtask)
+        if error_result is not None:
+            return error_result
+
+        # 执行所有阶段并返回结果
+        return self._execute_inner_loop_phases(agent_id, subtask, teammate)
+
+    def _validate_teammate_for_inner_loop(
+        self, agent_id: str, subtask: Dict[str, Any]
+    ) -> tuple:
+        """
+        验证 Inner Loop 的 teammate 是否存在
+
+        返回: (teammate对象, 错误结果)
+        如果 teammate 不存在，错误结果为 TaskResult；否则错误结果为 None。
         """
         teammate = self.teammates.get(agent_id)
         if not teammate:
-            return TaskResult(
+            error_result = TaskResult(
                 task_id=subtask.get("task_id", "unknown"),
                 agent_id=agent_id,
                 success=False,
                 error="Teammate not found",
             )
+            return None, error_result
+        return teammate, None
 
+    def _execute_inner_loop_phases(
+        self, agent_id: str, subtask: Dict[str, Any], teammate: 'TeammateAgent'
+    ) -> TaskResult:
+        """
+        执行 Inner Loop 所有阶段
+
+        阶段：OBSERVE → REASON → ACT → VERIFY → 记录结果
+        返回最终的 TaskResult 对象。
+        """
         start_time = time.time()
 
         # OBSERVE + REASON: 观察环境并推理决策
