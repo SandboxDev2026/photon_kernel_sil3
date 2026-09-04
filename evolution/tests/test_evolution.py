@@ -16,6 +16,7 @@ import os
 import json
 import time
 import unittest
+import tempfile
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -125,7 +126,7 @@ class TestPopulation(unittest.TestCase):
     def test_snapshot(self):
         pop = Population()
         pop.add(Individual(fitness=0.5))
-        filepath = pop.save_snapshot("/tmp/test_pop_snapshot.json")
+        filepath = pop.save_snapshot(f"{tempfile.gettempdir()}/test_pop_snapshot.json")
         self.assertTrue(os.path.exists(filepath))
         pop2 = Population.load_snapshot(filepath)
         self.assertEqual(len(pop2), 1)

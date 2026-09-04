@@ -8,6 +8,7 @@
 """
 
 import unittest
+import tempfile
 import sys
 import os
 import time
@@ -323,7 +324,7 @@ class TestLeaderTeammate(unittest.TestCase):
     def test_shared_workspace(self):
         """测试共享工作空间"""
         ws = SharedWorkspace(workspace_id="ws_001")
-        ws.add_artifact("agent_1", "/tmp/artifact_1.txt")
+        ws.add_artifact("agent_1", f"{tempfile.gettempdir()}/artifact_1.txt")
         ws.add_log("agent_1", "Task completed")
         ws.set_shared_data("key_1", "value_1")
         self.assertEqual(len(ws.get_all_artifacts()), 1)
@@ -710,7 +711,7 @@ class TestRealDataAdapter(unittest.TestCase):
 
     def setUp(self):
         self.adapter = RealDataAdapter()
-        self.test_dir = "/tmp/photon_real_data_test"
+        self.test_dir = tempfile.mkdtemp(prefix="photon_real_data_test_")
         os.makedirs(self.test_dir, exist_ok=True)
 
     def tearDown(self):
@@ -956,7 +957,7 @@ class TestLogConsumer(unittest.TestCase):
     """日志消费层测试（文件tail/gRPC流）"""
 
     def setUp(self):
-        self.test_dir = "/tmp/photon_log_consumer_test"
+        self.test_dir = tempfile.mkdtemp(prefix="photon_log_consumer_test_")
         os.makedirs(self.test_dir, exist_ok=True)
         self.adapter = RealDataAdapter()
 
@@ -1038,7 +1039,7 @@ class TestDefenseEnforcer(unittest.TestCase):
 
     def setUp(self):
         self.enforcer = DefenseRuleEnforcer(
-            config_dir="/tmp/photon_enforcer_test",
+            config_dir=tempfile.mkdtemp(prefix="photon_enforcer_test_"),
             dry_run=True,
         )
 

@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Any, Callable, Tuple
 from enum import Enum
 import time
 import threading
+import tempfile
 import uuid
 
 
@@ -140,7 +141,7 @@ class SharedWorkspace:
     多 Agent 之间文件产物、日志、中间结果共享。
     """
     workspace_id: str
-    base_path: str = "/tmp/photonbox_workspace"
+    base_path: str = field(default_factory=lambda: f"{tempfile.gettempdir()}/photonbox_workspace")
     artifacts: Dict[str, List[str]] = field(default_factory=dict)  # agent_id -> 产物列表
     logs: Dict[str, List[str]] = field(default_factory=dict)  # agent_id -> 日志列表
     shared_data: Dict[str, Any] = field(default_factory=dict)  # 共享数据

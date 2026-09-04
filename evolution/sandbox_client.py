@@ -6,9 +6,16 @@ evolution.sandbox_client — 沙盒客户端
 """
 from __future__ import annotations
 import json
-from urllib.parse import urlparse
 import time
 import urllib.request
+
+def _safe_urlopen(req, timeout=30):
+    """安全的 urlopen：校验 URL scheme，禁止 file:/ 和自定义 scheme"""
+    url = req.full_url if hasattr(req, 'full_url') else str(req)
+    if not url.startswith(('http://', 'https://')):
+        raise ValueError(f"Blocked URL scheme for security: {url[:50]}")
+    return urllib.request.urlopen(req, timeout=timeout)  # nosec B310 - scheme validated above
+
 import urllib.error
 from typing import Optional, Dict, Any
 
@@ -103,7 +110,7 @@ class SandboxClient:
         for attempt in range(self.max_retries + 1):
             try:
                 req = self._build_request(payload)
-                with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                with _safe_urlopen(req, timeout=self.timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                     return self._parse_success_response(data, start_time)
             except urllib.error.HTTPError as e:
@@ -123,7 +130,7 @@ class SandboxClient:
         """检查沙盒服务是否可用"""
         try:
             req = urllib.request.Request(f"{self.base_url}/health")
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with _safe_urlopen(req, timeout=5) as resp:
                 data = json.loads(resp.read().decode("utf-8"))
                 return data.get("status") == "ok"
         except Exception:
@@ -133,7 +140,7 @@ class SandboxClient:
         """获取沙盒能力矩阵"""
         try:
             req = urllib.request.Request(f"{self.base_url}/capabilities")
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with _safe_urlopen(req, timeout=5) as resp:
                 return json.loads(resp.read().decode("utf-8"))
         except Exception:
             return {}

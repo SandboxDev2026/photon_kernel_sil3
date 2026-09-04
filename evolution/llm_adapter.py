@@ -24,6 +24,14 @@ def _validate_url(url: str, allowed_schemes=("http", "https")) -> str:
     return url
 
 
+
+def _safe_urlopen(req, timeout=30):
+    """安全的 urlopen：校验 URL scheme，禁止 file:/ 和自定义 scheme"""
+    url = req.full_url if hasattr(req, 'full_url') else str(req)
+    _validate_url(url)
+    return urllib.request.urlopen(req, timeout=timeout)  # nosec B310 - scheme validated above
+
+
 class LLMResponse:
     """LLM 响应"""
     def __init__(self, text: str, model: str = "", usage: Dict[str, int] = None,
@@ -120,7 +128,7 @@ class OpenAIAdapter(BaseLLMAdapter):
             },
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with _safe_urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return LLMResponse(
                 text=data["choices"][0]["message"]["content"],
@@ -152,7 +160,7 @@ class AnthropicAdapter(BaseLLMAdapter):
             },
             method="POST"
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        with _safe_urlopen(req, timeout=self.timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return LLMResponse(
                 text=data["content"][0]["text"],
