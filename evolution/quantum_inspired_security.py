@@ -488,79 +488,98 @@ class QuantumSearchReranker:
         """
         self._stats["total_reranks"] += 1
 
-        if not results:
-            return results
+        # 边界处理：空或单结果
+        boundary = self._handle_boundary(results, score_key)
+        if boundary is not None:
+            return boundary
 
         n = len(results)
-        if n == 1:
+        n_relevant = sum(1 for r in results if self._oracle(r, query, score_key))
+
+        # 高相关比例时Grover会反向放大，回退原始排序
+        if n_relevant >= n / 2:
+            return self._fallback_original_sort(results, n, score_key)
+
+        # Grover迭代 + 计算放大分数 + 构建结果
+        amplitudes = self._grover_iteration(results, query, score_key, n, n_relevant)
+        amplified_scores = self._compute_amplified_scores(results, amplitudes, n, score_key)
+        self._update_amplification_stats(amplified_scores, n)
+        return self._build_reranked_results(results, amplified_scores, score_key)
+
+    def _handle_boundary(self, results: List[Dict[str, Any]],
+                          score_key: str) -> Optional[List[Dict[str, Any]]]:
+        """处理空或单结果的边界情况"""
+        if not results:
+            return results
+        if len(results) == 1:
             result = dict(results[0])
             result["original_score"] = result.get(score_key, 0.0)
             result["amplified_score"] = result.get(score_key, 0.0)
-            result["amplification_prob"] = 1.0 / n
+            result["amplification_prob"] = 1.0
             result["rank"] = 1
             return [result]
+        return None
 
-        # 初始化幅度（均匀分布）
+    def _fallback_original_sort(self, results: List[Dict[str, Any]], n: int,
+                                  score_key: str) -> List[Dict[str, Any]]:
+        """高相关比例时回退原始分数排序"""
+        sorted_results = sorted(
+            [dict(r) for r in results],
+            key=lambda x: x.get(score_key, 0.0),
+            reverse=True
+        )
+        for i, r in enumerate(sorted_results):
+            r["original_score"] = r.get(score_key, 0.0)
+            r["amplified_score"] = r.get(score_key, 0.0)
+            r["amplification_prob"] = 1.0 / n
+            r["rank"] = i + 1
+        self._update_amplification_stats(
+            [(0, 0, 1.0 / n) for _ in range(n)], n
+        )
+        return sorted_results
+
+    def _grover_iteration(self, results: List[Dict[str, Any]], query: str,
+                            score_key: str, n: int, n_relevant: int) -> List[float]:
+        """执行Grover迭代（预言机相位翻转 + 扩散算子幅度放大）"""
         amplitudes = [1.0 / math.sqrt(n)] * n
-
-        # 统计相关结果数量（预言机判断）
-        n_relevant = sum(1 for r in results if self._oracle(r, query, score_key))
-
-        # Grover 算法只在相关结果 < 一半时有效
-        # 当相关结果 >= 一半时，Grover会反向放大不相关结果，此时直接按原始分数排序
-        if n_relevant >= n / 2:
-            # 直接按原始分数降序排序
-            sorted_results = sorted(
-                [dict(r) for r in results],
-                key=lambda x: x.get(score_key, 0.0),
-                reverse=True
-            )
-            for i, r in enumerate(sorted_results):
-                r["original_score"] = r.get(score_key, 0.0)
-                r["amplified_score"] = r.get(score_key, 0.0)
-                r["amplification_prob"] = 1.0 / n
-                r["rank"] = i + 1
-            self._stats["total_reranks"] += 1
-            self._stats["avg_amplification"] = (
-                (self._stats["avg_amplification"] * (self._stats["total_reranks"] - 1) + 1.0 / n)
-                / self._stats["total_reranks"]
-            )
-            return sorted_results
-
-        # Grover 迭代（最佳迭代次数约为 pi/4 * sqrt(n/k)，k为相关结果数）
         optimal_iters = max(1, int(math.pi / 4 * math.sqrt(n / max(n_relevant, 1))))
         for _ in range(min(self.n_iterations, optimal_iters)):
-            # 1. 预言机：标记相关结果（相位翻转）
+            # 预言机：标记相关结果（相位翻转）
             for i, result in enumerate(results):
                 if self._oracle(result, query, score_key):
-                    amplitudes[i] *= -1  # 相位翻转
-
-            # 2. 扩散算子：关于平均值反转（幅度放大）
+                    amplitudes[i] *= -1
+            # 扩散算子：关于平均值反转（幅度放大）
             mean_amp = sum(amplitudes) / n
             for i in range(n):
                 amplitudes[i] = 2 * mean_amp - amplitudes[i]
+        return amplitudes
 
-        # 将幅度转换为最终分数
+    def _compute_amplified_scores(self, results: List[Dict[str, Any]],
+                                    amplitudes: List[float], n: int,
+                                    score_key: str) -> List[Tuple[int, float, float]]:
+        """将幅度转换为最终分数（融合原始分数和放大概率）"""
         amplified_scores = []
         for i, result in enumerate(results):
             original_score = result.get(score_key, 0.0)
-            # 幅度平方 = 概率（放大后的相关性）
             amplified_prob = amplitudes[i] ** 2
-            # 融合原始分数和放大概率
             final_score = 0.6 * original_score + 0.4 * amplified_prob * n
             amplified_scores.append((i, final_score, amplified_prob))
+        return amplified_scores
 
-        # 统计平均放大倍数
+    def _update_amplification_stats(self, amplified_scores: List[Tuple[int, float, float]],
+                                      n: int) -> None:
+        """更新平均放大倍数统计"""
         avg_amp = sum(p for _, _, p in amplified_scores) / n
+        total = self._stats["total_reranks"]
         self._stats["avg_amplification"] = (
-            (self._stats["avg_amplification"] * (self._stats["total_reranks"] - 1) + avg_amp)
-            / self._stats["total_reranks"]
+            (self._stats["avg_amplification"] * (total - 1) + avg_amp) / total
         )
 
-        # 按放大后的分数降序排序
+    def _build_reranked_results(self, results: List[Dict[str, Any]],
+                                  amplified_scores: List[Tuple[int, float, float]],
+                                  score_key: str) -> List[Dict[str, Any]]:
+        """按放大后的分数降序排序并构建结果列表"""
         amplified_scores.sort(key=lambda x: x[1], reverse=True)
-
-        # 重建结果列表
         reranked = []
         for original_idx, final_score, amplified_prob in amplified_scores:
             result = dict(results[original_idx])
@@ -570,7 +589,6 @@ class QuantumSearchReranker:
             result[score_key] = final_score
             result["rank"] = len(reranked) + 1
             reranked.append(result)
-
         return reranked
 
     def _oracle(self, result: Dict[str, Any], query: str,
@@ -735,74 +753,18 @@ class SNNIntrusionDetector:
         start_time = time.time()
         self._stats["total_detections"] += 1
 
-        # 重置所有神经元
-        for neuron in self.input_neurons + self.hidden_neurons + self.output_neurons:
-            neuron.reset()
-
-        # 归一化特征到 [0, 1]
+        self._reset_all_neurons()
         normalized = self._normalize(features)
 
-        # SNN 仿真
-        input_spike_times = [[] for _ in range(self.n_input)]
-        hidden_spike_times = [[] for _ in range(self.n_hidden)]
-        output_spike_times = [[] for _ in range(self.n_output)]
+        # SNN仿真：输入层→隐藏层→输出层
+        input_spikes, hidden_spikes, output_spikes = self._run_snn_simulation(normalized)
 
-        for t in range(int(self.simulation_time)):
-            # 输入层：特征值转换为输入电流（频率编码）
-            for i, neuron in enumerate(self.input_neurons):
-                feature_val = normalized[i] if i < len(normalized) else 0.0
-                # 频率编码：特征值越大，输入电流越大
-                input_current = feature_val * 2.0
-                if neuron.step(t, input_current):
-                    input_spike_times[i].append(t)
+        # 解码 + STDP学习
+        predicted, confidence, output_counts, total_spikes = self._decode_snn_output(output_spikes)
+        self._stdp_update(input_spikes, hidden_spikes, hidden_spikes, output_spikes)
 
-            # 隐藏层：输入脉冲通过突触权重传递
-            for j, hidden_neuron in enumerate(self.hidden_neurons):
-                hidden_current = 0.0
-                for i, input_neuron in enumerate(self.input_neurons):
-                    if input_spike_times[i] and input_spike_times[i][-1] == t:
-                        hidden_current += self.weights_input_hidden[i][j] * self.current_gain
-                if hidden_neuron.step(t, hidden_current):
-                    hidden_spike_times[j].append(t)
-
-            # 输出层：隐藏脉冲通过突触权重传递
-            for k, output_neuron in enumerate(self.output_neurons):
-                output_current = 0.0
-                for j, hidden_neuron in enumerate(self.hidden_neurons):
-                    if hidden_spike_times[j] and hidden_spike_times[j][-1] == t:
-                        output_current += self.weights_hidden_output[j][k] * self.current_gain
-                if output_neuron.step(t, output_current):
-                    output_spike_times[k].append(t)
-
-        # 解码：脉冲最多的输出神经元为分类结果
-        output_counts = [len(times) for times in output_spike_times]
-        total_spikes = sum(output_counts)
-
-        if total_spikes == 0:
-            predicted = "normal"
-            confidence = 0.5
-        else:
-            max_idx = output_counts.index(max(output_counts))
-            predicted = self.output_labels[max_idx]
-            confidence = output_counts[max_idx] / total_spikes
-
-        # STDP 学习（无监督，基于脉冲时序）
-        self._stdp_update(input_spike_times, hidden_spike_times,
-                          hidden_spike_times, output_spike_times)
-
-        # 更新统计
-        if predicted == "attack":
-            self._stats["attack_detected"] += 1
-        elif predicted == "suspicious":
-            self._stats["suspicious_detected"] += 1
-        else:
-            self._stats["normal_detected"] += 1
-
-        latency = (time.time() - start_time) * 1000  # ms
-        self._stats["avg_latency_ms"] = (
-            (self._stats["avg_latency_ms"] * (self._stats["total_detections"] - 1) + latency)
-            / self._stats["total_detections"]
-        )
+        latency = (time.time() - start_time) * 1000
+        self._update_detection_stats(predicted, latency)
 
         return {
             "predicted": predicted,
@@ -813,6 +775,79 @@ class SNNIntrusionDetector:
             "is_attack": predicted == "attack",
             "is_suspicious": predicted in ("attack", "suspicious"),
         }
+
+    def _reset_all_neurons(self) -> None:
+        """重置所有神经元状态"""
+        for neuron in self.input_neurons + self.hidden_neurons + self.output_neurons:
+            neuron.reset()
+
+    def _run_snn_simulation(self, normalized: List[float]) -> Tuple[List[List[float]], List[List[float]], List[List[float]]]:
+        """运行SNN仿真（输入层→隐藏层→输出层，事件驱动）"""
+        input_spike_times = [[] for _ in range(self.n_input)]
+        hidden_spike_times = [[] for _ in range(self.n_hidden)]
+        output_spike_times = [[] for _ in range(self.n_output)]
+
+        for t in range(int(self.simulation_time)):
+            self._step_input_layer(t, normalized, input_spike_times)
+            self._step_hidden_layer(t, input_spike_times, hidden_spike_times)
+            self._step_output_layer(t, hidden_spike_times, output_spike_times)
+
+        return input_spike_times, hidden_spike_times, output_spike_times
+
+    def _step_input_layer(self, t: int, normalized: List[float],
+                            input_spike_times: List[List[float]]) -> None:
+        """输入层前进一步：特征值→频率编码→输入电流"""
+        for i, neuron in enumerate(self.input_neurons):
+            feature_val = normalized[i] if i < len(normalized) else 0.0
+            input_current = feature_val * 2.0
+            if neuron.step(t, input_current):
+                input_spike_times[i].append(t)
+
+    def _step_hidden_layer(self, t: int, input_spike_times: List[List[float]],
+                            hidden_spike_times: List[List[float]]) -> None:
+        """隐藏层前进一步：输入脉冲通过突触权重传递"""
+        for j, hidden_neuron in enumerate(self.hidden_neurons):
+            hidden_current = 0.0
+            for i in range(self.n_input):
+                if input_spike_times[i] and input_spike_times[i][-1] == t:
+                    hidden_current += self.weights_input_hidden[i][j] * self.current_gain
+            if hidden_neuron.step(t, hidden_current):
+                hidden_spike_times[j].append(t)
+
+    def _step_output_layer(self, t: int, hidden_spike_times: List[List[float]],
+                             output_spike_times: List[List[float]]) -> None:
+        """输出层前进一步：隐藏脉冲通过突触权重传递"""
+        for k, output_neuron in enumerate(self.output_neurons):
+            output_current = 0.0
+            for j in range(self.n_hidden):
+                if hidden_spike_times[j] and hidden_spike_times[j][-1] == t:
+                    output_current += self.weights_hidden_output[j][k] * self.current_gain
+            if output_neuron.step(t, output_current):
+                output_spike_times[k].append(t)
+
+    def _decode_snn_output(self, output_spike_times: List[List[float]]) -> Tuple[str, float, List[int], int]:
+        """解码SNN输出：脉冲最多的神经元为分类结果"""
+        output_counts = [len(times) for times in output_spike_times]
+        total_spikes = sum(output_counts)
+        if total_spikes == 0:
+            return "normal", 0.5, output_counts, total_spikes
+        max_idx = output_counts.index(max(output_counts))
+        predicted = self.output_labels[max_idx]
+        confidence = output_counts[max_idx] / total_spikes
+        return predicted, confidence, output_counts, total_spikes
+
+    def _update_detection_stats(self, predicted: str, latency: float) -> None:
+        """更新检测统计信息"""
+        if predicted == "attack":
+            self._stats["attack_detected"] += 1
+        elif predicted == "suspicious":
+            self._stats["suspicious_detected"] += 1
+        else:
+            self._stats["normal_detected"] += 1
+        total = self._stats["total_detections"]
+        self._stats["avg_latency_ms"] = (
+            (self._stats["avg_latency_ms"] * (total - 1) + latency) / total
+        )
 
     def _normalize(self, features: List[float]) -> List[float]:
         """归一化特征到 [0, 1]"""
