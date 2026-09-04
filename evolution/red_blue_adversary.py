@@ -954,27 +954,40 @@ class RedBlueAdversaryTrainer:
         if not hasattr(self, '_rag_engine') or self._rag_engine is None:
             return self._fallback_defense_generation(attack_event)
 
-        # 1. 构建检索 query
-        if attack_event:
-            query = f"defense against {attack_event.get('attack_type', 'attack')} {attack_event.get('description', '')}"
-        else:
-            query = "sandbox security defense rule best practice"
+        query = self._build_defense_query(attack_event)
+        kb_names = self._select_defense_kbs(use_defense_kb, use_best_practice)
+        if not kb_names:
+            return self._fallback_defense_generation(attack_event)
 
+        # 检索相关防御规则
+        rag_context = self._rag_engine.retrieve(query, kb_names=kb_names, top_k=5)
+
+        # 提取相关规则并生成防御规则
+        relevant_rules = self._extract_relevant_rules(rag_context)
+        defense_rule, base_rule = self._generate_defense_from_base(relevant_rules, attack_event)
+
+        # 记录统计
+        self._rag_defense_rules_count = getattr(self, '_rag_defense_rules_count', 0) + 1
+
+        return self._build_defense_result(defense_rule, rag_context, relevant_rules, base_rule)
+
+    def _build_defense_query(self, attack_event: Optional[Dict]) -> str:
+        """构建防御规则检索 query"""
+        if attack_event:
+            return f"defense against {attack_event.get('attack_type', 'attack')} {attack_event.get('description', '')}"
+        return "sandbox security defense rule best practice"
+
+    def _select_defense_kbs(self, use_defense_kb: bool, use_best_practice: bool) -> List[str]:
+        """选择要检索的知识库"""
         kb_names = []
         if use_defense_kb:
             kb_names.append("defense_knowledge")
         if use_best_practice:
             kb_names.append("policy_knowledge")
+        return kb_names
 
-        if not kb_names:
-            return self._fallback_defense_generation(attack_event)
-
-        # 2. 检索相关防御规则
-        rag_context = self._rag_engine.retrieve(
-            query, kb_names=kb_names, top_k=5,
-        )
-
-        # 3. 基于检索结果生成防御规则
+    def _extract_relevant_rules(self, rag_context) -> List[Dict[str, Any]]:
+        """从 RAG 检索结果提取相关规则"""
         relevant_rules = []
         for result in rag_context.results:
             relevant_rules.append({
@@ -985,8 +998,11 @@ class RedBlueAdversaryTrainer:
                 "score": result.score,
                 "source": result.source_kb,
             })
+        return relevant_rules
 
-        # 4. 选择最高相关性的规则作为基础进行变异
+    def _generate_defense_from_base(self, relevant_rules: List[Dict],
+                                     attack_event: Optional[Dict]) -> tuple:
+        """基于最高相关性规则变异生成防御规则"""
         if relevant_rules:
             base_rule = max(relevant_rules, key=lambda x: x["score"])
             defense_rule = DefenseRule(
@@ -997,17 +1013,18 @@ class RedBlueAdversaryTrainer:
                 detection_logic=f"RAG generated detection based on {base_rule['rule_id']}",
                 effectiveness=0.7,
             )
-        else:
-            defense_rule = self._fallback_defense_generation(attack_event)["defense_rule"]
+            return defense_rule, base_rule
+        defense_rule = self._fallback_defense_generation(attack_event)["defense_rule"]
+        return defense_rule, None
 
-        # 5. 记录 RAG 增强的防御规则
-        self._rag_defense_rules_count = getattr(self, '_rag_defense_rules_count', 0) + 1
-
+    def _build_defense_result(self, defense_rule, rag_context,
+                               relevant_rules: List[Dict], base_rule: Optional[Dict]) -> Dict[str, Any]:
+        """构建防御规则生成结果"""
         return {
             "defense_rule": defense_rule,
             "rag_context": rag_context.to_dict(),
             "relevant_rules": relevant_rules,
-            "base_rule": base_rule if relevant_rules else None,
+            "base_rule": base_rule,
             "generation_method": "rag_enhanced" if relevant_rules else "fallback",
         }
 
