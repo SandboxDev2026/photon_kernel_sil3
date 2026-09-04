@@ -22,6 +22,7 @@ evolution.red_blue_adversary — 多智能体红蓝对抗框架
 from __future__ import annotations
 import random
 import json
+import os
 import time
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from dataclasses import dataclass, field
@@ -920,45 +921,110 @@ class RedBlueAdversaryTrainer:
         consumer,
         num_rounds: int = 10,
         events_per_round: int = 50,
+        file_path: Optional[str] = None,
+        signal_type: Optional[Any] = None,
+        realtime: bool = False,
+        realtime_timeout_seconds: float = 60.0,
     ) -> Dict[str, Any]:
         """
         从真实信号训练（真实数据驱动的红蓝对抗训练）
 
-        从 RealSignalConsumer 消费真实事件，每积累 events_per_round 个事件
-        触发一轮红蓝对抗训练。与传统 train_round() 的区别：
+        每积累 events_per_round 个真实事件触发一轮红蓝对抗训练。
+        支持两种模式：
+        - 批量模式（默认）：从文件消费已有事件，消费完即开始训练
+        - 实时模式（realtime=True）：启动 REALTIME 监听，持续消费新事件，
+          每积累 events_per_round 个事件触发一轮训练，直到达到 num_rounds 或超时
+
+        与传统 train_round() 的区别：
         - 输入是真实沙箱信号（seccomp/VM-Exit/审计链异常），不是模拟攻击用例
         - 红方从真实逃逸尝试中学习攻击模式
         - 蓝方针对真实攻击生成防御规则
+        - 进化出的规则可通过 defense_bridge 自动下发到底层沙盒
 
         Args:
-            consumer: RealSignalConsumer 实例（已加载真实日志）
+            consumer: RealSignalConsumer 实例
             num_rounds: 训练轮数
             events_per_round: 每轮消费的事件数量
+            file_path: 日志文件路径（批量模式下消费该文件）
+            signal_type: 信号类型（None 则自动检测）
+            realtime: 是否启用实时模式（tail -f 持续监听）
+            realtime_timeout_seconds: 实时模式超时时间（秒）
 
         Returns:
             训练结果统计
         """
         training_results = []
         total_events_consumed = 0
+        start_time = time.time()
 
-        for round_idx in range(num_rounds):
-            # 从消费器获取事件（模拟实时消费）
-            round_events = []
-            for _ in range(events_per_round):
-                # 从消费器的统计中获取已消费的事件数
-                # 实际使用中，事件通过回调自动注入
-                pass
+        # 连接消费器回调（如果尚未连接）
+        if not hasattr(self, '_real_signal_consumer') or self._real_signal_consumer is None:
+            self.connect_real_signal_consumer(consumer)
 
-            # 触发一轮训练（基于已摄入的真实事件）
-            round_result = self._train_round_from_real_events(round_idx)
-            training_results.append(round_result)
-            total_events_consumed += round_result.get("events_used", 0)
+        # 记录训练开始时已有的事件数
+        initial_event_count = len(self.real_event_history)
+
+        if realtime:
+            # 实时模式：启动 REALTIME 监听，每积累 N 个事件触发一轮训练
+            if file_path is None:
+                return {"error": "实时模式需要提供 file_path"}
+
+            consumer.start_realtime_consuming(
+                file_path,
+                signal_type=signal_type,
+                poll_interval=0.2,
+                from_beginning=True,
+            )
+
+            try:
+                for round_idx in range(num_rounds):
+                    # 等待积累足够事件或超时
+                    round_start_count = len(self.real_event_history)
+                    wait_start = time.time()
+
+                    while (len(self.real_event_history) - round_start_count < events_per_round):
+                        if time.time() - wait_start > realtime_timeout_seconds:
+                            break
+                        if time.time() - start_time > realtime_timeout_seconds * num_rounds:
+                            break
+                        time.sleep(0.1)
+
+                    # 触发一轮训练
+                    round_result = self._train_round_from_real_events(round_idx)
+                    round_result["mode"] = "realtime"
+                    training_results.append(round_result)
+                    total_events_consumed += round_result.get("events_used", 0)
+
+                    # 检查全局超时
+                    if time.time() - start_time > realtime_timeout_seconds * num_rounds:
+                        break
+            finally:
+                consumer.stop_realtime_consuming(timeout=3)
+
+        else:
+            # 批量模式：从文件消费事件，然后执行训练轮次
+            if file_path and os.path.exists(file_path):
+                consumed = consumer.consume_file(file_path, signal_type=signal_type)
+                total_events_consumed += consumed
+
+            # 执行训练轮次（每轮基于最近的 events_per_round 个事件）
+            for round_idx in range(num_rounds):
+                round_result = self._train_round_from_real_events(round_idx)
+                round_result["mode"] = "batch"
+                training_results.append(round_result)
+
+        # 计算本轮训练新增的事件数
+        new_events = len(self.real_event_history) - initial_event_count
 
         return {
-            "num_rounds": num_rounds,
+            "num_rounds": len(training_results),
+            "num_rounds_requested": num_rounds,
             "total_events_consumed": total_events_consumed,
+            "new_events_ingested": new_events,
             "total_attack_cases": len(self.red_agent.attack_cases),
             "total_defense_rules": len(self.blue_agent.defense_rules),
+            "mode": "realtime" if realtime else "batch",
+            "duration_seconds": round(time.time() - start_time, 3),
             "round_results": training_results,
         }
 
