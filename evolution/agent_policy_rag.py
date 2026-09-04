@@ -82,12 +82,7 @@ class AgentPolicyRAG:
         """
         带 RAG 增强的工具调用校验
 
-        流程：
-        1. 检索相关安全策略（RAG）
-        2. 将检索到的策略临时注入 PolicyGuard
-        3. 执行 PolicyGuard 校验
-        4. 清理临时注入的策略
-        5. 返回校验结果（包含 RAG 上下文信息）
+        流程：检索相关策略→临时注入 PolicyGuard→执行校验→清理临时策略→返回结果
 
         Args:
             agent_id: Agent ID
@@ -101,12 +96,19 @@ class AgentPolicyRAG:
             校验结果
         """
         self._stats["total_checks"] += 1
-
         if not use_rag:
             return self.policy_guard.check_tool_call(
                 agent_id, tool_name, params, conversation_history, agent_role,
             )
+        return self._perform_rag_enhanced_check(
+            agent_id, tool_name, params, conversation_history, agent_role
+        )
 
+    def _perform_rag_enhanced_check(self, agent_id: str, tool_name: str,
+                                      params: Dict[str, Any],
+                                      conversation_history: Optional[List[Dict]],
+                                      agent_role: Optional[str]) -> ValidationResult:
+        """执行 RAG 增强的校验：检索策略→注入→校验→清理"""
         # 1. 检索相关策略
         query = self._build_policy_query(tool_name, params, agent_role)
         rag_context = self.rag_engine.retrieve(
@@ -123,14 +125,18 @@ class AgentPolicyRAG:
                 agent_id, tool_name, params, conversation_history, agent_role,
             )
             # 附加 RAG 信息
-            result.metadata = getattr(result, 'metadata', {})
-            result.metadata["rag_sources"] = rag_context.sources
-            result.metadata["rag_docs"] = rag_context.total_docs
-            result.metadata["rag_retrieval_time_ms"] = rag_context.retrieval_time_ms
+            self._attach_rag_metadata(result, rag_context)
             return result
         finally:
             # 4. 清理临时策略
             self._remove_temp_policies(temp_rule_ids)
+
+    def _attach_rag_metadata(self, result: ValidationResult, rag_context) -> None:
+        """附加 RAG 元数据到校验结果"""
+        result.metadata = getattr(result, 'metadata', {})
+        result.metadata["rag_sources"] = rag_context.sources
+        result.metadata["rag_docs"] = rag_context.total_docs
+        result.metadata["rag_retrieval_time_ms"] = rag_context.retrieval_time_ms
 
     def recommend_policy(self, tool_name: str,
                           tool_description: str = "") -> PolicyRecommendation:
