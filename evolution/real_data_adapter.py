@@ -20,6 +20,7 @@ import re
 import time
 import hashlib
 import hmac
+import random
 from typing import List, Dict, Any, Optional, Tuple, Iterator
 from dataclasses import dataclass, field
 from enum import Enum
@@ -74,6 +75,20 @@ class SecurityEvent:
         return {
             "event_id": self.event_id,
             "source": self.source.value,
+            "severity": self.severity,
+            "description": self.description,
+            "payload": self.payload,
+            "anomaly_type": self.anomaly_type.value if self.anomaly_type else None,
+            "anomaly_score": self.anomaly_score,
+        }
+
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典（用于序列化和日志记录）"""
+        return {
+            "event_id": self.event_id,
+            "source": self.source.value,
+            "timestamp": self.timestamp,
+            "sandbox_id": self.sandbox_id,
             "severity": self.severity,
             "description": self.description,
             "payload": self.payload,
@@ -832,4 +847,247 @@ class RealDataAdapter:
         return generated
 
 
-import random
+    # ============================================================
+    # RAG 事件关联（方向3）
+    # ============================================================
+
+    def set_rag_engine(self, rag_engine) -> None:
+        """设置 RAG 引擎（用于事件关联和攻击链检测）"""
+        self._rag_engine = rag_engine
+
+    def correlate_events_with_rag(self, events: List[SecurityEvent],
+                                    time_window_seconds: int = 300) -> List[Dict[str, Any]]:
+        """
+        方向3：基于 RAG 的事件关联分析
+
+        将多个安全事件与攻击模式知识库进行关联，
+        识别出潜在的攻击链，而不是单条告警。
+
+        Args:
+            events: 安全事件列表
+            time_window_seconds: 时间窗口（秒），用于聚合相关事件
+
+        Returns:
+            关联分析结果列表（每个结果代表一个潜在的攻击链）
+        """
+        if not events:
+            return []
+
+        if not hasattr(self, '_rag_engine') or self._rag_engine is None:
+            return self._fallback_event_correlation(events, time_window_seconds)
+
+        # 1. 按时间窗口聚合事件
+        incident_candidates = self._aggregate_events_by_time(events, time_window_seconds)
+
+        # 2. 对每个事件聚合进行 RAG 关联分析
+        correlated_incidents = []
+        for incident in incident_candidates:
+            incident_desc = self._build_incident_description(incident)
+            rag_context = self._rag_engine.retrieve(
+                incident_desc, kb_names=["attack_pattern_knowledge"], top_k=3,
+            )
+
+            # 3. 匹配攻击模式
+            matched_patterns = []
+            for result in rag_context.results:
+                if result.score >= 0.3:
+                    matched_patterns.append({
+                        "pattern_id": result.doc_id,
+                        "attack_type": result.metadata.get("attack_type", "unknown"),
+                        "tactic": result.metadata.get("tactic", "unknown"),
+                        "severity": result.metadata.get("severity", "medium"),
+                        "description": result.content[:150],
+                        "match_score": result.score,
+                    })
+
+            # 4. 计算风险评分
+            risk_score = self._calculate_incident_risk(incident, matched_patterns)
+
+            correlated_incidents.append({
+                "incident_id": f"incident_{int(time.time())}_{len(correlated_incidents)}",
+                "events": [e.to_dict() for e in incident],
+                "event_count": len(incident),
+                "time_window": {
+                    "start": min(e.timestamp for e in incident),
+                    "end": max(e.timestamp for e in incident),
+                },
+                "matched_patterns": matched_patterns,
+                "risk_score": risk_score,
+                "risk_level": self._risk_level_from_score(risk_score),
+                "rag_context": rag_context.to_dict(),
+                "correlation_method": "rag_enhanced" if matched_patterns else "fallback",
+            })
+
+        # 5. 按风险评分排序
+        correlated_incidents.sort(key=lambda x: x["risk_score"], reverse=True)
+        return correlated_incidents
+
+    def detect_attack_chain_with_rag(self, events: List[SecurityEvent]) -> List[Dict[str, Any]]:
+        """
+        基于 RAG 的攻击链检测
+
+        识别多步骤攻击链（如：侦察→扫描→利用→提权→逃逸），
+        而不是孤立的单条告警。
+
+        Args:
+            events: 安全事件列表（按时间排序）
+
+        Returns:
+            检测到的攻击链列表
+        """
+        if len(events) < 2:
+            return []
+
+        if not hasattr(self, '_rag_engine') or self._rag_engine is None:
+            return []
+
+        # 1. 先进行事件关联
+        correlated = self.correlate_events_with_rag(events, time_window_seconds=600)
+
+        # 2. 识别攻击链阶段
+        attack_chains = []
+        for incident in correlated:
+            if incident["risk_score"] < 0.4:
+                continue
+
+            # 分析事件类型序列
+            event_types = [e.get("payload", {}).get("event_type", "unknown") if isinstance(e, dict) else getattr(e, 'payload', {}).get('event_type', 'unknown') for e in incident["events"]]
+            chain_stages = self._identify_chain_stages(event_types)
+
+            if len(chain_stages) >= 2:  # 至少2个阶段才算攻击链
+                attack_chains.append({
+                    "chain_id": f"chain_{int(time.time())}_{len(attack_chains)}",
+                    "stages": chain_stages,
+                    "stage_count": len(chain_stages),
+                    "events": incident["events"],
+                    "risk_score": incident["risk_score"],
+                    "risk_level": incident["risk_level"],
+                    "matched_patterns": incident["matched_patterns"],
+                    "description": f"检测到{len(chain_stages)}阶段攻击链: {' → '.join(chain_stages)}",
+                })
+
+        return attack_chains
+
+    def get_rag_correlation_stats(self) -> Dict[str, Any]:
+        """获取 RAG 事件关联统计"""
+        return {
+            "rag_engine_configured": hasattr(self, '_rag_engine') and self._rag_engine is not None,
+            "total_events_correlated": getattr(self, '_total_correlated_events', 0),
+            "total_incidents_detected": getattr(self, '_total_incidents', 0),
+            "total_attack_chains": getattr(self, '_total_attack_chains', 0),
+        }
+
+    # ---- 内部方法 ----
+
+    def _aggregate_events_by_time(self, events: List[SecurityEvent],
+                                    window_seconds: int) -> List[List[SecurityEvent]]:
+        """按时间窗口聚合事件"""
+        if not events:
+            return []
+
+        sorted_events = sorted(events, key=lambda e: e.timestamp)
+        groups = []
+        current_group = [sorted_events[0]]
+
+        for event in sorted_events[1:]:
+            if event.timestamp - current_group[-1].timestamp <= window_seconds:
+                current_group.append(event)
+            else:
+                groups.append(current_group)
+                current_group = [event]
+
+        if current_group:
+            groups.append(current_group)
+
+        return groups
+
+    def _build_incident_description(self, events: List[SecurityEvent]) -> str:
+        """构建事件聚合的描述文本（用于 RAG 检索）"""
+        event_types = [e.payload.get('event_type', 'unknown') for e in events]
+        sources = [e.source.value for e in events]
+        descriptions = [e.description[:50] for e in events[:3]]
+
+        return (
+            f"安全事件聚合: 事件类型={', '.join(set(event_types))}, "
+            f"来源={', '.join(set(sources))}, "
+            f"事件数={len(events)}, "
+            f"描述={'; '.join(descriptions)}"
+        )
+
+    def _calculate_incident_risk(self, events: List[SecurityEvent],
+                                   matched_patterns: List[Dict]) -> float:
+        """计算事件聚合的风险评分"""
+        if not events:
+            return 0.0
+
+        # 基础风险：事件严重程度
+        severity_scores = {"critical": 1.0, "high": 0.8, "medium": 0.5, "low": 0.3}
+        avg_severity = sum(severity_scores.get(e.severity, 0.3) for e in events) / len(events)
+
+        # 事件数量加成
+        count_bonus = min(len(events) * 0.05, 0.2)
+
+        # 匹配攻击模式加成
+        pattern_bonus = 0.0
+        if matched_patterns:
+            max_match = max(p["match_score"] for p in matched_patterns)
+            pattern_bonus = max_match * 0.3
+            # 关键攻击类型加成
+            critical_types = ["container_escape", "vm_escape", "privilege_escalation"]
+            if any(p["attack_type"] in critical_types for p in matched_patterns):
+                pattern_bonus += 0.2
+
+        return min(avg_severity + count_bonus + pattern_bonus, 1.0)
+
+    def _risk_level_from_score(self, score: float) -> str:
+        """根据风险评分确定风险等级"""
+        if score >= 0.8:
+            return "critical"
+        elif score >= 0.6:
+            return "high"
+        elif score >= 0.4:
+            return "medium"
+        else:
+            return "low"
+
+    def _identify_chain_stages(self, event_types: List[str]) -> List[str]:
+        """识别攻击链阶段"""
+        stage_mapping = {
+            "reconnaissance": ["recon", "scan", "probe", "discovery", "信息收集"],
+            "initial_access": ["exploit", "vulnerability", "injection", "利用"],
+            "execution": ["exec", "command", "shell", "执行"],
+            "persistence": ["persist", "cron", "startup", "持久化"],
+            "privilege_escalation": ["privesc", "root", "sudo", "提权"],
+            "defense_evasion": ["bypass", "evade", "seccomp", "绕过"],
+            "credential_access": ["credential", "password", "token", "凭证"],
+            "lateral_movement": ["lateral", "pivot", "横向"],
+            "exfiltration": ["exfil", "upload", "data_leak", "外泄"],
+            "impact": ["dos", "destroy", "ransomware", "影响"],
+        }
+
+        stages = []
+        for event_type in event_types:
+            et_lower = event_type.lower()
+            for stage, keywords in stage_mapping.items():
+                if any(kw in et_lower for kw in keywords):
+                    if stage not in stages:
+                        stages.append(stage)
+                    break
+
+        return stages
+
+    def _fallback_event_correlation(self, events: List[SecurityEvent],
+                                      window_seconds: int) -> List[Dict[str, Any]]:
+        """回退：简单事件关联（无 RAG）"""
+        groups = self._aggregate_events_by_time(events, window_seconds)
+        return [
+            {
+                "incident_id": f"fallback_{i}",
+                "events": [e.to_dict() for e in group],
+                "event_count": len(group),
+                "risk_score": 0.3,
+                "risk_level": "low",
+                "correlation_method": "fallback_no_rag",
+            }
+            for i, group in enumerate(groups)
+        ]

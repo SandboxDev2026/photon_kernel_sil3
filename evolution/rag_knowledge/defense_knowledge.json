@@ -1,0 +1,58 @@
+[
+  {
+    "id": "def_seccomp_strict",
+    "content": "严格seccomp系统调用白名单：仅允许read/write/close/exit/rt_sigreturn/fstat/lseek/mmap/mprotect/munmap/brk/futex/set_robust_list。禁止ptrace/kexec/init_module/delete_module/pivot_root/clone3。所有其他系统调用直接返回EPERM。适用场景：高风险不可信代码执行。",
+    "rule_type": "seccomp",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "def_landlock_paths",
+    "content": "Landlock文件系统路径白名单：仅允许访问/tmp、/var/tmp、当前工作目录。禁止访问/etc、/proc、/sys、/root、/home、/var/log。所有其他路径返回EACCES。适用场景：需要文件系统隔离的沙盒环境。",
+    "rule_type": "landlock",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "def_network_blackhole",
+    "content": "网络黑洞策略：禁止所有出站网络连接。seccomp拦截connect/sendto/sendmsg系统调用。eBPF钩子在cgroup级别拦截所有TCP/UDP连接。适用场景：完全离线的代码执行环境。",
+    "rule_type": "network",
+    "severity": "high",
+    "importance": 0.85
+  },
+  {
+    "id": "def_network_whitelist",
+    "content": "网络白名单策略：仅允许访问指定域名/IP。eBPF钩子拦截connect系统调用，匹配白名单（api.example.com、pypi.org、registry.npmjs.org）。禁止访问RFC1918内网地址、169.254.169.254元数据服务。适用场景：需要有限网络访问的沙盒环境。",
+    "rule_type": "network",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "def_resource_cgroup",
+    "content": "cgroup v2资源限制：CPU.max=1（单核心）、memory.max=256M、pids.max=64、io.max=10MB/s。设置memory.oom.group=1，OOM时杀死整个cgroup。适用场景：防止DoS攻击的资源隔离。",
+    "rule_type": "cgroup",
+    "severity": "medium",
+    "importance": 0.8
+  },
+  {
+    "id": "def_cap_drop",
+    "content": "能力位全部丢弃：drop ALL capabilities。仅在必要时添加CAP_SETUID/CAP_SETGID/CAP_DAC_OVERRIDE。禁止CAP_SYS_ADMIN/CAP_NET_ADMIN/CAP_SYS_PTRACE/CAP_BPF。适用场景：最小权限原则的沙盒进程。",
+    "rule_type": "capabilities",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "def_readonly_rootfs",
+    "content": "只读根文件系统：rootfs以ro模式挂载。/tmp和/var/tmp为tmpfs可写。禁止挂载新文件系统。适用场景：防止沙盒内修改系统文件。",
+    "rule_type": "filesystem",
+    "severity": "high",
+    "importance": 0.85
+  },
+  {
+    "id": "def_audit_syscall",
+    "content": "系统调用审计：记录所有execve、openat、connect、socket、clone系统调用。审计日志包含：进程ID、用户ID、系统调用号、参数、返回值、时间戳。审计日志写入HMAC哈希链防篡改。适用场景：需要完整审计追踪的合规环境。",
+    "rule_type": "audit",
+    "severity": "medium",
+    "importance": 0.75
+  }
+]

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "apt_container_escape",
+    "content": "容器逃逸攻击模式：攻击者在容器内尝试逃逸到宿主机。典型步骤：1)探测容器环境（检查/.dockerenv、/proc/1/cgroup）；2)尝试挂载宿主机磁盘（mount /dev/sda1 /mnt）；3)利用cgroup release_agent执行命令；4)通过/proc/1/root访问宿主机文件系统；5)利用内核漏洞提权。检测特征：mount系统调用、cgroup写入、/proc/1访问、CAP_SYS_ADMIN获取。 container escape attack privilege escalation cgroup mount namespace",
+    "attack_type": "container_escape",
+    "tactic": "privilege_escalation",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "apt_vm_escape",
+    "content": "虚拟机逃逸攻击模式：攻击者在Guest VM内尝试逃逸到宿主机。典型步骤：1)探测虚拟化环境（检查CPUID hypervisor位、/sys/class/dmi）；2)攻击virtio设备驱动（virtio-net/virtio-blk/virtio-vsock）；3)利用VMExit处理漏洞；4)攻击VMM（Firecracker/QEMU）；5)通过共享内存/设备DMA访问宿主机内存。检测特征：virtio设备异常IO、VMExit频率异常、MMIO访问异常、CPUID探测。 virtual machine escape VM escape virtio VMExit KVM hypervisor",
+    "attack_type": "vm_escape",
+    "tactic": "privilege_escalation",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "apt_seccomp_bypass",
+    "content": "seccomp绕过攻击模式：攻击者尝试绕过seccomp系统调用过滤。典型方法：1)syscall号混淆（x32 ABI、多架构syscall）；2)参数注入（利用允许的syscall传入恶意参数）；3)ptrace注入（通过允许的ptrace修改其他进程）；4)userfaultfd竞争（利用userfaultfd制造TOCTOU）；5)内核漏洞（利用内核漏洞绕过seccomp）。检测特征：异常syscall号、x32 ABI使用、ptrace调用、userfaultfd创建。 seccomp bypass syscall filter defense evasion x32 ABI ptrace",
+    "attack_type": "seccomp_bypass",
+    "tactic": "defense_evasion",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "apt_network_scan",
+    "content": "内网扫描攻击模式：攻击者在沙盒内扫描内网服务。典型步骤：1)探测网络环境（ifconfig/ip addr、/etc/resolv.conf）；2)扫描内网网段（nmap/masscan/nc -z）；3)探测常见端口（22/80/443/3306/6379/9200）；4)访问云元数据服务（169.254.169.254）；5)DNS隧道（通过DNS查询外带数据）。检测特征：大量connect调用、短时间多IP连接、RFC1918地址访问、元数据服务访问、DNS异常查询。 network scan reconnaissance internal network port scan metadata service",
+    "attack_type": "network_scan",
+    "tactic": "reconnaissance",
+    "severity": "high",
+    "importance": 0.85
+  },
+  {
+    "id": "apt_data_exfiltration",
+    "content": "数据外泄攻击模式：攻击者尝试将沙盒内数据外传到外部。典型方法：1)HTTP/HTTPS外带（POST到外部服务器）；2)DNS隧道（将数据编码为DNS子域名）；3)ICMP隧道（ping包携带数据）；4)文件上传（通过允许的文件上传接口）；5)剪贴板/共享内存（通过共享内存区域传递）。检测特征：大量出站连接、DNS查询异常长度、ICMP包异常大小、HTTP POST大数据、共享内存异常访问。 data exfiltration DNS tunnel HTTP POST ICMP tunnel",
+    "attack_type": "data_exfiltration",
+    "tactic": "exfiltration",
+    "severity": "high",
+    "importance": 0.85
+  },
+  {
+    "id": "apt_privilege_escalation",
+    "content": "提权攻击模式：攻击者尝试从低权限用户提升到root。典型方法：1)内核漏洞利用（CVE-2022-0185/CVE-2021-4034等）；2)SUID二进制滥用（查找SUID文件并利用）；3)sudo配置错误（sudo -l发现可执行命令）；4)cgroup/namespace逃逸（通过CAP_SYS_ADMIN）；5)计划任务/服务劫持（修改crontab或systemd服务）。检测特征：内核漏洞利用特征、SUID文件访问、sudo调用、cgroup写入、crontab修改。 privilege escalation root SUID sudo kernel exploit cgroup namespace",
+    "attack_type": "privilege_escalation",
+    "tactic": "privilege_escalation",
+    "severity": "critical",
+    "importance": 0.9
+  },
+  {
+    "id": "apt_dos_resource",
+    "content": "拒绝服务攻击模式：攻击者尝试耗尽沙盒资源。典型方法：1)CPU耗尽（死循环、fork炸弹）；2)内存耗尽（大量malloc、内存泄漏）；3)磁盘耗尽（大量写文件、/dev/null填充）；4)进程数耗尽（fork炸弹、大量子进程）；5)文件描述符耗尽（大量打开文件/socket）。检测特征：CPU使用率100%、内存使用率快速增长、磁盘IO异常、进程数激增、fd数量激增。 denial of service DoS resource exhaustion fork bomb memory leak",
+    "attack_type": "dos",
+    "tactic": "impact",
+    "severity": "medium",
+    "importance": 0.75
+  }
+]

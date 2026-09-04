@@ -1,0 +1,58 @@
+[
+  {
+    "id": "pol_tool_sandboxing",
+    "content": "工具沙箱化策略：所有工具调用必须在沙盒内执行，禁止直接访问宿主机资源。工具参数必须经过校验，禁止包含命令注入、路径遍历、SSRF等攻击向量。高危工具（exec/shell/network）需要额外审批。适用场景：所有Agent工具调用。 tool sandboxing security policy command injection path traversal SSRF",
+    "policy_type": "tool_security",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "pol_least_privilege",
+    "content": "最小权限原则：Agent只能获得完成任务所需的最小权限。禁止授予CAP_SYS_ADMIN、CAP_NET_ADMIN等高危能力，除非经过人工审批。每个Agent角色有预定义的权限白名单，超出白名单的权限请求自动拒绝。适用场景：Agent权限管理。 least privilege permission security policy CAP_SYS_ADMIN capability",
+    "policy_type": "permission",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "pol_network_isolation",
+    "content": "网络隔离策略：沙盒实例默认禁止网络访问。需要网络时必须经过白名单校验，禁止访问内网RFC1918地址段和云元数据服务169.254.169.254。所有出站流量必须经过隔离网关审计。适用场景：沙盒网络管控。 network isolation security policy RFC1918 metadata service whitelist",
+    "policy_type": "network",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "pol_audit_compliance",
+    "content": "审计合规策略：所有工具调用、安全事件、配置变更必须记录到HMAC审计哈希链。审计日志不可篡改，支持事后校验。关键操作（权限变更、网络策略修改、沙盒销毁）需要双人审批。适用场景：合规审计环境。 audit compliance security policy HMAC hash chain approval",
+    "policy_type": "compliance",
+    "severity": "high",
+    "importance": 0.85
+  },
+  {
+    "id": "pol_secret_protection",
+    "content": "密钥保护策略：密钥、API密钥、凭证永远不进入沙盒内存。所有密钥请求通过Credential Vault代理中转，沙盒只能拿到临时令牌。禁止在日志、错误信息、工具返回中泄露密钥。适用场景：密钥管理。 secret protection credential vault security policy API key token",
+    "policy_type": "secret_management",
+    "severity": "critical",
+    "importance": 0.95
+  },
+  {
+    "id": "pol_resource_limits",
+    "content": "资源限制策略：每个沙盒实例必须设置CPU、内存、磁盘、进程数硬上限。禁止无限制资源分配，防止DoS攻击。资源超限自动终止沙盒实例并告警。适用场景：资源隔离。 resource limits security policy CPU memory disk process DoS",
+    "policy_type": "resource",
+    "severity": "medium",
+    "importance": 0.8
+  },
+  {
+    "id": "pol_prompt_injection",
+    "content": "提示注入防护策略：所有用户输入、工具返回、文档内容必须经过提示注入检测。检测到注入尝试时，高危操作必须拒绝，中危需要人工审批。禁止将用户输入直接拼接到系统提示词中。适用场景：LLM Agent安全。 prompt injection LLM security policy defense evasion",
+    "policy_type": "llm_security",
+    "severity": "high",
+    "importance": 0.9
+  },
+  {
+    "id": "pol_high_risk_isolation",
+    "content": "高风险隔离策略：高风险不可信代码必须路由到StrongPool（Firecracker MicroVM），禁止使用LightPool进程沙盒。KVM不可用时直接拒绝任务，不静默降级。高风险任务执行完立即销毁VM，不复用。适用场景：不可信代码执行。 high risk isolation security policy Firecracker MicroVM StrongPool KVM",
+    "policy_type": "isolation",
+    "severity": "critical",
+    "importance": 0.95
+  }
+]

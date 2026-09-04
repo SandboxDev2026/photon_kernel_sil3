@@ -1,0 +1,50 @@
+[
+  {
+    "id": "CVE-2022-0185",
+    "content": "Linux内核fsconfig()整数溢出导致的堆溢出提权漏洞。影响版本5.1-5.16。利用条件：需要CAP_SYS_ADMIN或用户命名空间。利用步骤：创建用户命名空间获取CAP_SYS_ADMIN→调用fsconfig()触发整数溢出→堆溢出覆盖task_struct->cred→提权至root。检测特征：fsconfig系统调用异常参数、用户命名空间内mount操作、cred结构体内存异常。 Linux kernel fsconfig integer overflow heap overflow privilege escalation container escape",
+    "cve_id": "CVE-2022-0185",
+    "cvss": 8.4,
+    "type": "提权",
+    "importance": 0.9
+  },
+  {
+    "id": "CVE-2021-4034",
+    "content": "polkit pkexec本地提权漏洞（PwnKit）。影响版本polkit<=0.120。利用条件：本地用户访问。利用步骤：构造恶意GCONV_PATH环境变量→调用pkexec触发argv[0]越界写入→覆盖环境变量为GCONV_PATH→加载恶意共享库提权。检测特征：pkexec进程异常环境变量、GCONV_PATH包含相对路径、非root用户加载自定义.so。 polkit pkexec PwnKit local privilege escalation SUID",
+    "cve_id": "CVE-2021-4034",
+    "cvss": 7.8,
+    "type": "提权",
+    "importance": 0.85
+  },
+  {
+    "id": "CVE-2023-32233",
+    "content": "Linux内核nf_tables use-after-free提权漏洞。影响版本<=6.3.1。利用条件：需要CAP_NET_ADMIN或用户命名空间。利用步骤：创建netlink socket→发送恶意nf_tables batch消息→触发匿名集合的use-after-free→覆盖内核对象提权。检测特征：nf_tables系统调用异常、netlink消息包含恶意集合操作、内核内存UAF特征。 Linux kernel nf_tables use-after-free privilege escalation netfilter",
+    "cve_id": "CVE-2023-32233",
+    "cvss": 7.8,
+    "type": "提权",
+    "importance": 0.85
+  },
+  {
+    "id": "CVE-2024-1086",
+    "content": "Linux内核netfilter nf_tables双重释放提权漏洞。影响版本5.14-6.6。利用条件：需要网络命名空间访问。利用步骤：创建用户+网络命名空间→配置恶意nf_tables规则→触发verdict对象双重释放→堆喷射覆盖cred提权。检测特征：nf_tables verdict对象异常、命名空间内netfilter操作、内核堆双重释放特征。 Linux kernel netfilter nf_tables double-free privilege escalation",
+    "cve_id": "CVE-2024-1086",
+    "cvss": 7.8,
+    "type": "提权",
+    "importance": 0.85
+  },
+  {
+    "id": "CVE-2023-2640",
+    "content": "Ubuntu内核OverlayFS本地提权漏洞。影响版本Ubuntu kernel 5.4/5.15/6.2。利用条件：本地用户，OverlayFS。利用步骤：创建OverlayFS挂载→设置恶意trusted.overlay.* xattr→绕过权限检查修改文件→提权至root。检测特征：OverlayFS trusted xattr异常设置、非特权用户修改trusted属性、Ubuntu特有内核路径。 Ubuntu kernel OverlayFS local privilege escalation",
+    "cve_id": "CVE-2023-2640",
+    "cvss": 7.8,
+    "type": "提权",
+    "importance": 0.8
+  },
+  {
+    "id": "CVE-2021-22555",
+    "content": "Linux内核netfilter x_tables堆溢出提权漏洞。影响版本<=5.12。利用条件：需要netfilter访问。利用步骤：创建netfilter socket→发送恶意IPT_SO_SET_REPLACE消息→触发compat_target堆溢出→覆盖内核对象提权。检测特征：IPT_SO_SET_REPLACE异常大小、netfilter compat路径访问、内核堆溢出特征。 Linux kernel netfilter x_tables heap overflow privilege escalation",
+    "cve_id": "CVE-2021-22555",
+    "cvss": 7.8,
+    "type": "提权",
+    "importance": 0.8
+  }
+]

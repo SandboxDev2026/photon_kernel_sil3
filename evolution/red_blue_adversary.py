@@ -852,3 +852,205 @@ class RedBlueAdversaryTrainer:
             at: stats["success"] / stats["total"] if stats["total"] > 0 else 0
             for at, stats in type_stats.items()
         }
+
+    # ============================================================
+    # RAG 检索增强生成（方向1+2）
+    # ============================================================
+
+    def set_rag_engine(self, rag_engine) -> None:
+        """设置 RAG 引擎（用于检索增强生成）"""
+        self._rag_engine = rag_engine
+
+    def generate_attack_case_with_rag(self, target_sandbox_type: str = "container",
+                                        use_cve_kb: bool = True,
+                                        use_evasion_kb: bool = True) -> Dict[str, Any]:
+        """
+        方向1：基于 RAG 的红方攻击用例生成
+
+        从 CVE 知识库和逃逸技术知识库检索相关漏洞，
+        基于真实 PoC 变异生成攻击用例，而不是凭空生成。
+
+        Args:
+            target_sandbox_type: 目标沙盒类型（container/vm/seccomp/ebpf）
+            use_cve_kb: 是否使用 CVE 知识库
+            use_evasion_kb: 是否使用逃逸技术知识库
+
+        Returns:
+            生成的攻击用例及 RAG 上下文
+        """
+        if not hasattr(self, '_rag_engine') or self._rag_engine is None:
+            # 没有 RAG 引擎时，回退到传统生成
+            return self._fallback_attack_generation(target_sandbox_type)
+
+        # 1. 检索相关 CVE
+        kb_names = []
+        if use_cve_kb:
+            kb_names.append("cve_knowledge")
+        if use_evasion_kb:
+            kb_names.append("attack_pattern_knowledge")
+
+        if not kb_names:
+            return self._fallback_attack_generation(target_sandbox_type)
+
+        query = f"{target_sandbox_type} escape vulnerability exploit"
+        rag_context = self._rag_engine.retrieve(
+            query, kb_names=kb_names, top_k=5,
+        )
+
+        # 2. 基于检索结果生成攻击用例
+        relevant_cves = []
+        for result in rag_context.results:
+            if result.source_kb == "cve_knowledge":
+                relevant_cves.append({
+                    "cve_id": result.metadata.get("cve_id", result.doc_id),
+                    "cvss": result.metadata.get("cvss", 0),
+                    "type": result.metadata.get("type", "unknown"),
+                    "content": result.content[:200],
+                    "score": result.score,
+                })
+
+        # 3. 选择最高相关性的 CVE 作为基础
+        if relevant_cves:
+            base_cve = max(relevant_cves, key=lambda x: x["score"])
+            attack_case = AttackCase(
+                case_id=f"rag_attack_{int(time.time())}",
+                attack_type=AttackType.PRIVILEGE_ESCALATION,
+                description=f"基于 {base_cve['cve_id']} 的变异攻击：{base_cve['content'][:100]}",
+                payload=f"RAG generated exploit based on {base_cve['cve_id']}",
+                target_component=target_sandbox_type,
+                difficulty=0.8 if base_cve["cvss"] >= 7.0 else 0.5,
+            )
+        else:
+            attack_case = self._fallback_attack_generation(target_sandbox_type)["attack_case"]
+
+        # 4. 记录 RAG 增强的攻击用例
+        self._rag_attack_cases_count = getattr(self, '_rag_attack_cases_count', 0) + 1
+
+        return {
+            "attack_case": attack_case,
+            "rag_context": rag_context.to_dict(),
+            "relevant_cves": relevant_cves,
+            "base_cve": base_cve if relevant_cves else None,
+            "generation_method": "rag_enhanced" if relevant_cves else "fallback",
+        }
+
+    def generate_defense_rule_with_rag(self, attack_event: Optional[Dict] = None,
+                                         use_defense_kb: bool = True,
+                                         use_best_practice: bool = True) -> Dict[str, Any]:
+        """
+        方向2：基于 RAG 的蓝方防御规则生成
+
+        从防御规则知识库和安全最佳实践检索相关规则，
+        基于已有规则变异生成新防御规则。
+
+        Args:
+            attack_event: 攻击事件（用于针对性生成防御规则）
+            use_defense_kb: 是否使用防御规则知识库
+            use_best_practice: 是否使用安全最佳实践
+
+        Returns:
+            生成的防御规则及 RAG 上下文
+        """
+        if not hasattr(self, '_rag_engine') or self._rag_engine is None:
+            return self._fallback_defense_generation(attack_event)
+
+        # 1. 构建检索 query
+        if attack_event:
+            query = f"defense against {attack_event.get('attack_type', 'attack')} {attack_event.get('description', '')}"
+        else:
+            query = "sandbox security defense rule best practice"
+
+        kb_names = []
+        if use_defense_kb:
+            kb_names.append("defense_knowledge")
+        if use_best_practice:
+            kb_names.append("policy_knowledge")
+
+        if not kb_names:
+            return self._fallback_defense_generation(attack_event)
+
+        # 2. 检索相关防御规则
+        rag_context = self._rag_engine.retrieve(
+            query, kb_names=kb_names, top_k=5,
+        )
+
+        # 3. 基于检索结果生成防御规则
+        relevant_rules = []
+        for result in rag_context.results:
+            relevant_rules.append({
+                "rule_id": result.doc_id,
+                "rule_type": result.metadata.get("rule_type", "general"),
+                "severity": result.metadata.get("severity", "medium"),
+                "content": result.content[:200],
+                "score": result.score,
+                "source": result.source_kb,
+            })
+
+        # 4. 选择最高相关性的规则作为基础进行变异
+        if relevant_rules:
+            base_rule = max(relevant_rules, key=lambda x: x["score"])
+            defense_rule = DefenseRule(
+                rule_id=f"rag_evolved_{int(time.time())}",
+                defense_type=DefenseType.SYSTEM_CALL_MONITOR,
+                description=f"基于 {base_rule['rule_id']} 变异的防御规则：{base_rule['content'][:100]}",
+                target_attack_types=[AttackType.NAMESPACE_ESCAPE],
+                detection_logic=f"RAG generated detection based on {base_rule['rule_id']}",
+                effectiveness=0.7,
+            )
+        else:
+            defense_rule = self._fallback_defense_generation(attack_event)["defense_rule"]
+
+        # 5. 记录 RAG 增强的防御规则
+        self._rag_defense_rules_count = getattr(self, '_rag_defense_rules_count', 0) + 1
+
+        return {
+            "defense_rule": defense_rule,
+            "rag_context": rag_context.to_dict(),
+            "relevant_rules": relevant_rules,
+            "base_rule": base_rule if relevant_rules else None,
+            "generation_method": "rag_enhanced" if relevant_rules else "fallback",
+        }
+
+    def get_rag_stats(self) -> Dict[str, Any]:
+        """获取 RAG 增强统计"""
+        return {
+            "rag_attack_cases_generated": getattr(self, '_rag_attack_cases_count', 0),
+            "rag_defense_rules_generated": getattr(self, '_rag_defense_rules_count', 0),
+            "rag_engine_configured": hasattr(self, '_rag_engine') and self._rag_engine is not None,
+        }
+
+    def _fallback_attack_generation(self, target_sandbox_type: str) -> Dict[str, Any]:
+        """回退：传统攻击用例生成（无 RAG）"""
+        attack_case = AttackCase(
+            case_id=f"fallback_attack_{int(time.time())}",
+            attack_type=AttackType.NAMESPACE_ESCAPE,
+            description=f"传统生成的{target_sandbox_type}逃逸攻击用例",
+            payload=f"Fallback exploit for {target_sandbox_type}",
+            target_component=target_sandbox_type,
+            difficulty=0.5,
+        )
+        return {
+            "attack_case": attack_case,
+            "rag_context": None,
+            "relevant_cves": [],
+            "base_cve": None,
+            "generation_method": "fallback_no_rag",
+        }
+
+    def _fallback_defense_generation(self, attack_event: Optional[Dict]) -> Dict[str, Any]:
+        """回退：传统防御规则生成（无 RAG）"""
+        defense_rule = DefenseRule(
+            rule_id=f"fallback_{int(time.time())}",
+            defense_type=DefenseType.SYSTEM_CALL_MONITOR,
+            description="传统生成的通用防御规则",
+            target_attack_types=[],
+            detection_logic="Fallback detection logic",
+            effectiveness=0.5,
+        )
+        return {
+            "defense_rule": defense_rule,
+            "rag_context": None,
+            "relevant_rules": [],
+            "base_rule": None,
+            "generation_method": "fallback_no_rag",
+        }
