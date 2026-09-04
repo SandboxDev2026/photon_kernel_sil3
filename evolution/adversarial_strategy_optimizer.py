@@ -864,12 +864,18 @@ class AdversarialStrategyOrchestrator:
         self,
         cooldown_seconds: float = 60.0,
         batch_size: int = 10,
+        validation_suite: Optional[Any] = None,
     ):
         self.evaluator = AdversarialEvaluator()
         self.red_optimizer = RedStrategyOptimizer()
         self.blue_optimizer = BlueStrategyOptimizer()
         self.trigger = EvolutionTrigger(cooldown_seconds=cooldown_seconds, batch_size=batch_size)
         self.evolution_history: List[Dict[str, Any]] = []
+
+        # 进化验证套件（可选：每轮进化后自动记录漂移，回答"自进化是真有效还是数据噪声"）
+        # 集成 EvolutionValidationSuite，持续监控学习有效性和 A/B 对比
+        self.validation_suite = validation_suite
+        self._total_events_for_validation = 0
 
     def process_real_event(
         self,
@@ -890,6 +896,7 @@ class AdversarialStrategyOrchestrator:
         """
         # 1. 红方提取攻击模式
         pattern = self.red_optimizer.extract_attack_pattern(event)
+        self._total_events_for_validation += 1
 
         # 2. 智能触发判断
         should_evolve, reason = self.trigger.should_evolve(event)
@@ -960,7 +967,33 @@ class AdversarialStrategyOrchestrator:
         if len(self.evolution_history) > 100:
             self.evolution_history = self.evolution_history[-100:]
 
+        # 自动记录漂移快照（如果挂载了验证套件）
+        if self.validation_suite is not None:
+            try:
+                self.validation_suite.record_evolution_round(
+                    red_weights=dict(self.red_optimizer.strategy_weights),
+                    blue_rule_count=len(evolution_result.get("targeted_defenses", [])),
+                    blue_avg_effectiveness=evolution_result.get("evaluation", {}).get("defense_success_rate", 0.0),
+                    attack_pattern_count=len(self.red_optimizer.attack_patterns),
+                    total_events_consumed=self._total_events_for_validation,
+                )
+            except Exception:
+                # 验证套件是辅助监控功能，失败不应影响主进化流程
+                # 这里静默忽略是有意设计：验证套件的异常会在其自身报告中体现
+                pass  # nosec B110
+
         return evolution_result
+
+    def get_validation_report(self) -> Optional[Dict[str, Any]]:
+        """
+        获取进化验证报告（回答"自进化是真有效还是数据噪声"）
+
+        Returns:
+            验证报告（如果挂载了验证套件），否则 None
+        """
+        if self.validation_suite is None:
+            return None
+        return self.validation_suite.generate_validation_report()
 
     def get_summary(self) -> Dict[str, Any]:
         """获取策略编排器摘要"""

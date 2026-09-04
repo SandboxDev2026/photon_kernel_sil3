@@ -369,6 +369,7 @@ class RealSignalConsumer:
         batch_interval_seconds: float = 30.0,
         dedup_enabled: bool = True,
         dedup_ttl_seconds: int = 86400,
+        drift_monitor: Optional[Any] = None,
     ):
         """
         初始化真实信号消费器
@@ -379,6 +380,8 @@ class RealSignalConsumer:
             batch_interval_seconds: 批量训练的时间间隔阈值
             dedup_enabled: 是否启用事件去重
             dedup_ttl_seconds: 去重缓存 TTL（秒）
+            drift_monitor: 可选的进化漂移监控器（EvolutionDriftMonitor），
+                           用于持续集成中监控红方权重变化，检测"只消费数据不学习"的停滞
         """
         self.mode = mode
         self.batch_size = batch_size
@@ -417,6 +420,85 @@ class RealSignalConsumer:
             "escape_attempts": 0,
             "batch_triggers": 0,
             "errors": 0,
+        }
+
+        # 进化漂移监控（CI 必加项：检测"只消费数据不学习"的停滞）
+        self.drift_monitor = drift_monitor
+        self._drift_snapshot_count = 0
+        self._last_red_weights: Dict[str, float] = {}
+
+    def attach_drift_monitor(self, drift_monitor: Any) -> None:
+        """
+        挂载进化漂移监控器（持续集成必加项）
+
+        在 RealSignalConsumer 消费真实事件的同时，监控红方权重分布的漂移。
+        如果连续 N 轮真实事件流入后权重变化 < 阈值，触发停滞告警，
+        说明框架只消费了数据却没真正学习——需要回查 train_round 逻辑。
+
+        Args:
+            drift_monitor: EvolutionDriftMonitor 实例
+        """
+        self.drift_monitor = drift_monitor
+
+    def record_weight_snapshot(
+        self,
+        red_weights: Dict[str, float],
+        blue_rule_count: int = 0,
+        blue_avg_effectiveness: float = 0.0,
+        attack_pattern_count: int = 0,
+        total_events_consumed: Optional[int] = None,
+    ) -> Optional[Any]:
+        """
+        记录一轮训练后的红方权重分布快照（漂移监控埋点）
+
+        每轮 train_round 完成后调用此方法，将红方策略权重分布记录到漂移监控器。
+        漂移监控器会自动计算相邻轮次的 KL 散度/变化率，检测停滞/突变/振荡。
+
+        Args:
+            red_weights: 红方策略权重分布（攻击类型 -> 权重）
+            blue_rule_count: 蓝方防御规则数量
+            blue_avg_effectiveness: 蓝方平均防御有效性
+            attack_pattern_count: 攻击模式数量
+
+        Returns:
+            DriftSnapshot（如果挂载了漂移监控器），否则 None
+        """
+        self._last_red_weights = dict(red_weights)
+        self._drift_snapshot_count += 1
+
+        if self.drift_monitor is None:
+            return None
+
+        return self.drift_monitor.record_snapshot(
+            round_idx=self._drift_snapshot_count,
+            red_weights=red_weights,
+            blue_rule_count=blue_rule_count,
+            blue_avg_effectiveness=blue_avg_effectiveness,
+            attack_pattern_count=attack_pattern_count,
+            total_events_consumed=total_events_consumed if total_events_consumed is not None else self.stats["total_consumed"],
+        )
+
+    def get_drift_status(self) -> Dict[str, Any]:
+        """
+        获取漂移监控状态
+
+        Returns:
+            漂移监控状态（是否挂载、快照数、最近告警、学习有效性）
+        """
+        if self.drift_monitor is None:
+            return {
+                "drift_monitor_attached": False,
+                "message": "未挂载漂移监控器。建议在CI中挂载EvolutionDriftMonitor，"
+                           "检测'只消费数据不学习'的进化停滞。",
+            }
+
+        return {
+            "drift_monitor_attached": True,
+            "snapshots_recorded": self._drift_snapshot_count,
+            "total_events_consumed": self.stats["total_consumed"],
+            "learning_effectiveness": self.drift_monitor.get_learning_effectiveness(),
+            "recent_alerts": self.drift_monitor.get_recent_alerts(limit=5),
+            "consecutive_stagnation": getattr(self.drift_monitor, 'consecutive_stagnation', 0),
         }
 
     def register_callback(self, callback: Callable[[EscapeEvent], None]) -> None:
