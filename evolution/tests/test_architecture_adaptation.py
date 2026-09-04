@@ -818,28 +818,31 @@ class TestRealDataAdapter(unittest.TestCase):
 
     def test_audit_chain_hash_break_detection(self):
         """测试审计链哈希断裂检测"""
-        detector = AuditChainAnomalyDetector()
-        # 第一条记录（创世）
-        line1 = json.dumps({"seq": 0, "prev_hash": "0" * 64, "hmac": "abc", "timestamp": 1.0})
+        # 使用 hmac_secret=None 跳过 HMAC 验证，专注测试哈希链断裂
+        detector = AuditChainAnomalyDetector(hmac_secret=None)
+        # 第一条记录（创世），包含hash字段用于链验证
+        line1 = json.dumps({"seq": 0, "prev_hash": "0" * 64, "hash": "a" * 64, "timestamp": 1.0})
         valid1, anomaly1 = detector.verify_and_detect(line1)
         self.assertTrue(valid1)
         self.assertIsNone(anomaly1)
 
         # 第二条记录（prev_hash错误，模拟哈希断裂）
-        line2 = json.dumps({"seq": 1, "prev_hash": "wrong_hash", "hmac": "def", "timestamp": 2.0})
+        line2 = json.dumps({"seq": 1, "prev_hash": "wrong_hash", "hash": "b" * 64, "timestamp": 2.0})
         valid2, anomaly2 = detector.verify_and_detect(line2)
-        self.assertFalse(valid2)
+        # 行本身有效（JSON格式正确），但检测到异常
+        self.assertTrue(valid2)
         self.assertIsNotNone(anomaly2)
         self.assertEqual(anomaly2.anomaly_type, AnomalyType.HASH_CHAIN_BREAK)
 
     def test_audit_chain_sequence_gap_detection(self):
         """测试审计链序列号不连续检测"""
-        detector = AuditChainAnomalyDetector()
-        # seq=0
-        line1 = json.dumps({"seq": 0, "prev_hash": "a" * 64, "hmac": "abc", "timestamp": 1.0})
+        # 使用 hmac_secret=None 跳过 HMAC 验证，专注测试序列号不连续
+        detector = AuditChainAnomalyDetector(hmac_secret=None)
+        # seq=0，包含hash字段
+        line1 = json.dumps({"seq": 0, "prev_hash": "0" * 64, "hash": "a" * 64, "timestamp": 1.0})
         detector.verify_and_detect(line1)
-        # seq=5（跳过了1-4，应该检测到missing events）
-        line2 = json.dumps({"seq": 5, "prev_hash": "b" * 64, "hmac": "def", "timestamp": 2.0})
+        # seq=5（跳过了1-4，应该检测到missing events），prev_hash与line1的hash匹配
+        line2 = json.dumps({"seq": 5, "prev_hash": "a" * 64, "hash": "b" * 64, "timestamp": 2.0})
         valid, anomaly = detector.verify_and_detect(line2)
         self.assertIsNotNone(anomaly)
         self.assertEqual(anomaly.anomaly_type, AnomalyType.MISSING_EVENTS)

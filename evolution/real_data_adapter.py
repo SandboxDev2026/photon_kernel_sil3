@@ -299,7 +299,19 @@ class KvmVmExitParser:
         severity, is_high_risk = self._classify_exit_risk(fields["exit_reason"])
 
         # 3. 构建安全事件
-        return self._build_vm_exit_event(data, fields, severity, is_high_risk)
+        event = self._build_vm_exit_event(data, fields, severity, is_high_risk)
+
+        # 4. 存储事件和统计
+        self.parsed_events.append(event)
+        self.exit_reason_counts[fields["exit_reason"]] += fields["exit_count"]
+        self.vm_exit_history[fields["vm_id"]].append({
+            "exit_reason": fields["exit_reason"],
+            "timestamp": fields["timestamp"],
+            "severity": severity,
+            "is_high_risk": is_high_risk,
+        })
+
+        return event
 
 
     def _extract_vm_exit_fields(self, data: Dict) -> Optional[Dict]:
@@ -470,7 +482,7 @@ class AuditChainAnomalyDetector:
                 )
 
         # HMAC验证（如果有密钥）
-        if hmac_val and self.hmac_key:
+        if hmac_val and self.hmac_secret:
             expected = self._compute_hmac(data)
             if expected != hmac_val:
                 return self._build_anomaly_event(
@@ -498,7 +510,7 @@ class AuditChainAnomalyDetector:
                 gap = seq - expected
                 severity = "high" if gap > 5 else "medium"
                 return self._build_anomaly_event(
-                    data, AnomalyType.SEQUENCE_ANOMALY, severity,
+                    data, AnomalyType.MISSING_EVENTS, severity,
                     f"序列号不连续: 期望{expected}, 实际{seq}, 缺失{gap}条"
                 )
 
@@ -562,11 +574,20 @@ class AuditChainAnomalyDetector:
             payload=data,
         )
 
-    def _compute_hmac(self, payload: str) -> str:
-        """计算HMAC-SHA256"""
+    def _compute_hmac(self, payload) -> str:
+        """计算HMAC-SHA256，支持str或dict（自动序列化为JSON）"""
+        if isinstance(payload, dict):
+            # 排除hmac字段本身，使用排序键确保一致性
+            payload_str = json.dumps(
+                {k: v for k, v in payload.items() if k != "hmac"},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        else:
+            payload_str = str(payload)
         return hmac.new(
             self.hmac_secret.encode(),
-            payload.encode(),
+            payload_str.encode(),
             hashlib.sha256
         ).hexdigest()
 

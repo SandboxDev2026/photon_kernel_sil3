@@ -369,6 +369,7 @@ class DefenseRuleEnforcer:
             "failed": failed,
             "total": len(self.pending_updates),
             "results": results,
+            "dry_run": self.dry_run,
         }
 
 
