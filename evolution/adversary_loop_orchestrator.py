@@ -160,52 +160,59 @@ class AdversaryLoopOrchestrator:
         self._start_time = time.time()
 
         try:
-            # 1. 初始化红蓝对抗训练器
-            self._trainer = RedBlueAdversaryTrainer()
-
-            # 2. 初始化防御规则执行器
-            self._executor = DefenseRuleExecutor(
-                config_dir=self._get_config_dir(),
-                mode=self.config.deploy_mode,
-                require_confirmation_for_high_risk=self.config.require_confirmation_for_high_risk,
-            )
-
-            # 3. 初始化实时日志流
-            self._log_stream = RealtimeLogStream(
-                max_queue_size=self.config.max_queue_size,
-            )
-
-            # 注册日志事件回调
-            self._log_stream.register_event_callback(self._on_log_event)
-            self._log_stream.register_escape_callback(self._on_escape_event)
-
-            # 添加日志源
-            for source in self.config.log_sources:
-                self._log_stream.add_source(
-                    name=source["name"],
-                    file_path=source["path"],
-                    from_beginning=source.get("from_beginning", False),
-                )
-
-            # 4. 启动日志流
-            self._log_stream.start()
-
-            # 5. 启动定时推演线程(如果是TIMED或HYBRID模式)
-            if self.config.trigger_mode in (TriggerMode.TIMED, TriggerMode.HYBRID):
-                self._timed_thread = threading.Thread(
-                    target=self._timed_training_loop, daemon=True
-                )
-                self._timed_thread.start()
-
+            self._initialize_components()
+            self._setup_log_stream()
+            self._start_timed_training_if_needed()
             self._state = OrchestratorState.RUNNING
             return True
-
         except Exception as e:
             self._state = OrchestratorState.ERROR
             self._stats.errors += 1
             if self.config.on_error:
                 self.config.on_error(e)
             return False
+
+    def _initialize_components(self) -> None:
+        """初始化核心组件：红蓝对抗训练器、防御规则执行器"""
+        # 1. 初始化红蓝对抗训练器
+        self._trainer = RedBlueAdversaryTrainer()
+
+        # 2. 初始化防御规则执行器
+        self._executor = DefenseRuleExecutor(
+            config_dir=self._get_config_dir(),
+            mode=self.config.deploy_mode,
+            require_confirmation_for_high_risk=self.config.require_confirmation_for_high_risk,
+        )
+
+        # 3. 初始化实时日志流
+        self._log_stream = RealtimeLogStream(
+            max_queue_size=self.config.max_queue_size,
+        )
+
+    def _setup_log_stream(self) -> None:
+        """设置日志流：注册回调、添加日志源、启动"""
+        # 注册日志事件回调
+        self._log_stream.register_event_callback(self._on_log_event)
+        self._log_stream.register_escape_callback(self._on_escape_event)
+
+        # 添加日志源
+        for source in self.config.log_sources:
+            self._log_stream.add_source(
+                name=source["name"],
+                file_path=source["path"],
+                from_beginning=source.get("from_beginning", False),
+            )
+
+        # 启动日志流
+        self._log_stream.start()
+
+    def _start_timed_training_if_needed(self) -> None:
+        """如果是 TIMED 或 HYBRID 模式，启动定时推演线程"""
+        if self.config.trigger_mode in (TriggerMode.TIMED, TriggerMode.HYBRID):
+            self._timed_thread = threading.Thread(
+                target=self._timed_training_loop, daemon=True
+            )
+            self._timed_thread.start()
 
     def stop(self, timeout: float = 10.0) -> None:
         """停止编排器"""
