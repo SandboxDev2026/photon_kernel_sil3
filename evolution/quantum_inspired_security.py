@@ -99,35 +99,12 @@ class QuantumAnomalyDetector:
             异常评分结果
         """
         self._stats["total_detections"] += 1
-
-        # 归一化特征到 [-1, 1]
         normalized = self._normalize_features(features)
-
-        # QAOA 模拟：计算期望能量
         energy, iterations, convergence = self._qaoa_optimize(normalized, max_iterations)
-
-        # 能量转换为异常分数（能量越低越正常，越高越异常）
-        # 归一化能量到 [0, 1]
-        max_possible_energy = self.n_qubits + len(self.couplings)
-        score = min(abs(energy) / max(max_possible_energy, 1), 1.0)
-
-        # 特征贡献分析
+        score = self._compute_anomaly_score(energy)
         contributing = self._analyze_contributions(normalized)
-
         is_anomaly = score >= self.threshold
-        if is_anomaly:
-            self._stats["anomalies_detected"] += 1
-
-        self._stats["avg_iterations"] = (
-            (self._stats["avg_iterations"] * (self._stats["total_detections"] - 1) + iterations)
-            / self._stats["total_detections"]
-        )
-        if convergence:
-            self._stats["convergence_rate"] = (
-                (self._stats["convergence_rate"] * (self._stats["total_detections"] - 1) + 1)
-                / self._stats["total_detections"]
-            )
-
+        self._update_detection_stats(is_anomaly, iterations, convergence)
         return AnomalyScore(
             score=score,
             is_anomaly=is_anomaly,
@@ -136,6 +113,24 @@ class QuantumAnomalyDetector:
             iterations=iterations,
             convergence=convergence,
         )
+
+    def _compute_anomaly_score(self, energy: float) -> float:
+        """能量转换为异常分数（能量越低越正常，越高越异常）"""
+        max_possible_energy = self.n_qubits + len(self.couplings)
+        return min(abs(energy) / max(max_possible_energy, 1), 1.0)
+
+    def _update_detection_stats(self, is_anomaly: bool, iterations: int, convergence: bool):
+        """更新检测统计信息"""
+        if is_anomaly:
+            self._stats["anomalies_detected"] += 1
+        total = self._stats["total_detections"]
+        self._stats["avg_iterations"] = (
+            (self._stats["avg_iterations"] * (total - 1) + iterations) / total
+        )
+        if convergence:
+            self._stats["convergence_rate"] = (
+                (self._stats["convergence_rate"] * (total - 1) + 1) / total
+            )
 
     def _normalize_features(self, features: List[float]) -> List[float]:
         """归一化特征到 [-1, 1]（Ising 自旋值）"""
@@ -355,40 +350,50 @@ class QuantumEventCorrelator:
             关联结果（包含干涉类型、最终概率、测量结果）
         """
         self._stats["total_correlations"] += 1
-
         if not event_ids:
             return {"correlated": False, "reason": "no events"}
-
-        # 收集所有事件的概率幅
-        all_amplitudes: Dict[str, complex] = {}
-        for eid in event_ids:
-            if eid in self.event_states:
-                state = self.event_states[eid]
-                for state_name, amp in state.amplitudes.items():
-                    if state_name not in all_amplitudes:
-                        all_amplitudes[state_name] = complex(0, 0)
-                    # 量子叠加：概率幅相加
-                    all_amplitudes[state_name] += amp * self.interference_strength
-
+        all_amplitudes = self._collect_event_amplitudes(event_ids)
         if not all_amplitudes:
             return {"correlated": False, "reason": "no valid event states"}
-
-        # 归一化
-        total_norm = math.sqrt(sum(abs(a) ** 2 for a in all_amplitudes.values()))
-        if total_norm > 0:
-            all_amplitudes = {k: v / total_norm for k, v in all_amplitudes.items()}
-
-        # 计算干涉类型
-        interference_type = self._classify_interference(event_ids, all_amplitudes)
-
-        # 测量（坍缩）
-        combined_state = QuantumEventState(
-            event_id="combined",
-            amplitudes=all_amplitudes,
+        normalized = self._normalize_amplitudes(all_amplitudes)
+        interference_type = self._classify_interference(event_ids, normalized)
+        measured, probabilities = self._measure_combined_state(normalized)
+        return self._build_correlation_result(
+            event_ids, interference_type, probabilities, measured
         )
+
+    def _collect_event_amplitudes(self, event_ids: List[str]) -> Dict[str, complex]:
+        """收集所有事件的概率幅（量子叠加：概率幅相加）"""
+        all_amplitudes: Dict[str, complex] = {}
+        for eid in event_ids:
+            if eid not in self.event_states:
+                continue
+            state = self.event_states[eid]
+            for state_name, amp in state.amplitudes.items():
+                if state_name not in all_amplitudes:
+                    all_amplitudes[state_name] = complex(0, 0)
+                all_amplitudes[state_name] += amp * self.interference_strength
+        return all_amplitudes
+
+    def _normalize_amplitudes(self, amplitudes: Dict[str, complex]) -> Dict[str, complex]:
+        """归一化概率幅"""
+        total_norm = math.sqrt(sum(abs(a) ** 2 for a in amplitudes.values()))
+        if total_norm > 0:
+            return {k: v / total_norm for k, v in amplitudes.items()}
+        return amplitudes
+
+    def _measure_combined_state(self, amplitudes: Dict[str, complex]) -> Tuple[str, Dict[str, float]]:
+        """测量（坍缩）组合状态"""
+        combined_state = QuantumEventState(event_id="combined", amplitudes=amplitudes)
         measured = combined_state.measure()
         probabilities = combined_state.get_probabilities()
+        return measured, probabilities
 
+    def _build_correlation_result(self, event_ids: List[str],
+                                   interference_type: str,
+                                   probabilities: Dict[str, float],
+                                   measured: str) -> Dict[str, Any]:
+        """构建关联结果字典"""
         return {
             "correlated": True,
             "event_count": len(event_ids),
@@ -874,44 +879,46 @@ class SNNIntrusionDetector:
         - 突触前脉冲在突触后之后 → 权重抑制（LTD）
         """
         # 输入→隐藏层 STDP
-        for i in range(self.n_input):
-            for j in range(self.n_hidden):
-                for pre_t in pre_spikes_1[i]:
-                    for post_t in post_spikes_1[j]:
-                        delta_t = post_t - pre_t
-                        if delta_t > 0:
-                            # LTP：突触前先脉冲，权重增强
-                            self.weights_input_hidden[i][j] += (
-                                self.stdp_lr * math.exp(-delta_t / self.stdp_tau_plus)
-                            )
-                        elif delta_t < 0:
-                            # LTD：突触后先脉冲，权重抑制
-                            self.weights_input_hidden[i][j] -= (
-                                self.stdp_lr * math.exp(delta_t / self.stdp_tau_minus)
-                            )
-
+        self._apply_stdp_layer(
+            pre_spikes_1, post_spikes_1,
+            self.weights_input_hidden, self.n_input, self.n_hidden
+        )
         # 隐藏→输出层 STDP
-        for j in range(self.n_hidden):
-            for k in range(self.n_output):
-                for pre_t in pre_spikes_2[j]:
-                    for post_t in post_spikes_2[k]:
-                        delta_t = post_t - pre_t
-                        if delta_t > 0:
-                            self.weights_hidden_output[j][k] += (
-                                self.stdp_lr * math.exp(-delta_t / self.stdp_tau_plus)
-                            )
-                        elif delta_t < 0:
-                            self.weights_hidden_output[j][k] -= (
-                                self.stdp_lr * math.exp(delta_t / self.stdp_tau_minus)
-                            )
-
+        self._apply_stdp_layer(
+            pre_spikes_2, post_spikes_2,
+            self.weights_hidden_output, self.n_hidden, self.n_output
+        )
         # 权重裁剪
-        for i in range(self.n_input):
-            for j in range(self.n_hidden):
-                self.weights_input_hidden[i][j] = max(-1.0, min(1.0, self.weights_input_hidden[i][j]))
-        for j in range(self.n_hidden):
-            for k in range(self.n_output):
-                self.weights_hidden_output[j][k] = max(-1.0, min(1.0, self.weights_hidden_output[j][k]))
+        self._clip_weights(self.weights_input_hidden, self.n_input, self.n_hidden)
+        self._clip_weights(self.weights_hidden_output, self.n_hidden, self.n_output)
+
+    def _apply_stdp_layer(self, pre_spikes: List[List[float]],
+                           post_spikes: List[List[float]],
+                           weights: List[List[float]],
+                           n_pre: int, n_post: int) -> None:
+        """应用单层 STDP 权重更新"""
+        for i in range(n_pre):
+            for j in range(n_post):
+                for pre_t in pre_spikes[i]:
+                    for post_t in post_spikes[j]:
+                        delta = self._compute_stdp_delta(post_t - pre_t)
+                        weights[i][j] += delta
+
+    def _compute_stdp_delta(self, delta_t: float) -> float:
+        """计算 STDP 权重变化量（LTP 增强 / LTD 抑制）"""
+        if delta_t > 0:
+            # LTP：突触前先脉冲，权重增强
+            return self.stdp_lr * math.exp(-delta_t / self.stdp_tau_plus)
+        elif delta_t < 0:
+            # LTD：突触后先脉冲，权重抑制
+            return -self.stdp_lr * math.exp(delta_t / self.stdp_tau_minus)
+        return 0.0
+
+    def _clip_weights(self, weights: List[List[float]], n_pre: int, n_post: int) -> None:
+        """权重裁剪到 [-1.0, 1.0]"""
+        for i in range(n_pre):
+            for j in range(n_post):
+                weights[i][j] = max(-1.0, min(1.0, weights[i][j]))
 
     def get_stats(self) -> Dict[str, Any]:
         """获取统计信息"""
@@ -961,47 +968,78 @@ class QuantumInspiredSecurityEngine:
         Returns:
             完整分析结果
         """
-        # 1. 量子退火异常检测
-        anomaly = self.anomaly_detector.detect(features)
+        anomaly = self._run_anomaly_detection(features)
+        intrusion = self._run_intrusion_detection(features)
+        correlation = self._run_event_correlation(events)
+        reranked = self._run_search_reranking(search_results, query)
+        combined_risk = self._compute_combined_risk(anomaly, intrusion, correlation)
+        risk_level = self._determine_risk_level(combined_risk)
+        return self._build_full_analysis_result(
+            anomaly, intrusion, correlation, reranked, combined_risk, risk_level
+        )
 
-        # 2. SNN 入侵检测
-        intrusion = self.intrusion_detector.detect(features)
+    def _run_anomaly_detection(self, features: List[float]) -> AnomalyScore:
+        """执行量子退火异常检测"""
+        return self.anomaly_detector.detect(features)
 
-        # 3. 量子概率事件关联（如果有事件）
-        correlation = None
-        if events:
-            event_ids = []
-            for i, event in enumerate(events):
-                eid = event.get("event_id", f"event_{i}")
-                # 根据事件严重程度设置初始幅度
-                severity = event.get("severity", "medium")
-                if severity == "critical":
-                    amps = {"normal": complex(0.1, 0), "suspicious": complex(0.3, 0), "attack": complex(0.95, 0)}
-                elif severity == "high":
-                    amps = {"normal": complex(0.2, 0), "suspicious": complex(0.5, 0), "attack": complex(0.84, 0)}
-                else:
-                    amps = None  # 默认均匀分布
-                self.event_correlator.add_event(eid, amps)
-                event_ids.append(eid)
-            correlation = self.event_correlator.correlate(event_ids)
+    def _run_intrusion_detection(self, features: List[float]) -> Dict[str, Any]:
+        """执行 SNN 入侵检测"""
+        return self.intrusion_detector.detect(features)
 
-        # 4. Grover 搜索重排序（如果有检索结果）
-        reranked = None
-        if search_results:
-            reranked = self.search_reranker.rerank(search_results, query)
+    def _run_event_correlation(self, events: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
+        """执行量子概率事件关联（如果有事件）"""
+        if not events:
+            return None
+        event_ids = []
+        for i, event in enumerate(events):
+            eid = event.get("event_id", f"event_{i}")
+            amps = self._get_event_amplitudes(event.get("severity", "medium"))
+            self.event_correlator.add_event(eid, amps)
+            event_ids.append(eid)
+        return self.event_correlator.correlate(event_ids)
 
-        # 综合评分
+    def _get_event_amplitudes(self, severity: str) -> Optional[Dict[str, complex]]:
+        """根据事件严重程度设置初始幅度"""
+        if severity == "critical":
+            return {"normal": complex(0.1, 0), "suspicious": complex(0.3, 0), "attack": complex(0.95, 0)}
+        elif severity == "high":
+            return {"normal": complex(0.2, 0), "suspicious": complex(0.5, 0), "attack": complex(0.84, 0)}
+        return None  # 默认均匀分布
+
+    def _run_search_reranking(self, search_results: Optional[List[Dict[str, Any]]],
+                               query: str) -> Optional[List[Dict[str, Any]]]:
+        """执行 Grover 搜索重排序（如果有检索结果）"""
+        if not search_results:
+            return None
+        return self.search_reranker.rerank(search_results, query)
+
+    def _compute_combined_risk(self, anomaly: AnomalyScore,
+                                intrusion: Dict[str, Any],
+                                correlation: Optional[Dict[str, Any]]) -> float:
+        """综合风险评分（35%异常 + 35%入侵 + 30%事件关联）"""
         anomaly_score = anomaly.score
         intrusion_attack_prob = 1.0 if intrusion["predicted"] == "attack" else (
             0.5 if intrusion["predicted"] == "suspicious" else 0.1)
         correlation_attack_prob = correlation["attack_probability"] if correlation else 0.0
+        return 0.35 * anomaly_score + 0.35 * intrusion_attack_prob + 0.30 * correlation_attack_prob
 
-        combined_risk = (
-            0.35 * anomaly_score +
-            0.35 * intrusion_attack_prob +
-            0.30 * correlation_attack_prob
-        )
+    def _determine_risk_level(self, combined_risk: float) -> str:
+        """根据综合风险评分确定风险等级"""
+        if combined_risk >= 0.8:
+            return "critical"
+        elif combined_risk >= 0.6:
+            return "high"
+        elif combined_risk >= 0.4:
+            return "medium"
+        return "low"
 
+    def _build_full_analysis_result(self, anomaly: AnomalyScore,
+                                     intrusion: Dict[str, Any],
+                                     correlation: Optional[Dict[str, Any]],
+                                     reranked: Optional[List[Dict[str, Any]]],
+                                     combined_risk: float,
+                                     risk_level: str) -> Dict[str, Any]:
+        """构建完整分析结果字典"""
         return {
             "anomaly_detection": {
                 "score": anomaly.score,
@@ -1014,11 +1052,7 @@ class QuantumInspiredSecurityEngine:
             "event_correlation": correlation,
             "search_reranking": reranked,
             "combined_risk_score": combined_risk,
-            "risk_level": "critical" if combined_risk >= 0.8 else (
-                "high" if combined_risk >= 0.6 else (
-                    "medium" if combined_risk >= 0.4 else "low"
-                )
-            ),
+            "risk_level": risk_level,
             "stats": {
                 "anomaly": self.anomaly_detector.get_stats(),
                 "correlation": self.event_correlator.get_stats(),
