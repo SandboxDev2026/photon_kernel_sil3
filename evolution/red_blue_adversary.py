@@ -481,6 +481,8 @@ class RedBlueAdversaryTrainer:
         enable_mutation: bool = True,
         mutation_rate: float = 0.2,
         enable_evolution: bool = True,
+        defense_bridge: Optional[Any] = None,
+        auto_deploy_evolved_rules: bool = False,
     ):
         self.red_agent = red_agent or RedAgent()
         self.blue_agent = blue_agent or BlueAgent()
@@ -491,6 +493,10 @@ class RedBlueAdversaryTrainer:
         self.rounds: List[AdversaryRound] = []
         self.institutional_tests: List[Dict[str, Any]] = []
         self.real_event_history: List[Dict[str, Any]] = []
+        # 进化-防御桥接器集成：进化出的规则自动下发到底层沙盒
+        self.defense_bridge = defense_bridge
+        self.auto_deploy_evolved_rules = auto_deploy_evolved_rules and defense_bridge is not None
+        self.bridge_deployment_history: List[Dict[str, Any]] = []
 
     def run_single_round(self, round_id: int) -> AdversaryRound:
         """
@@ -666,7 +672,7 @@ class RedBlueAdversaryTrainer:
         }
 
     def _process_event_evolution(self, event: SecurityEvent, result: Dict[str, Any]) -> None:
-        """处理事件触发的进化：攻击用例+防御进化+策略调整"""
+        """处理事件触发的进化：攻击用例+防御进化+策略调整+自动下发"""
         # 1. 将真实事件转换为攻击用例（红方学习）
         attack_case = self._convert_event_to_attack_case(event)
         if attack_case:
@@ -681,9 +687,118 @@ class RedBlueAdversaryTrainer:
                 result["triggered_evolution"] = True
                 result["actions"].append(f"进化防御规则: {evolved_rule.rule_id}")
 
-        # 3. 异常事件触发红方策略调整
+                # 3. 自动通过进化-防御桥接器下发到底层沙盒
+                if self.auto_deploy_evolved_rules and self.defense_bridge is not None:
+                    deploy_result = self._deploy_rule_via_bridge(evolved_rule, event)
+                    result["bridge_deployment"] = deploy_result
+                    if deploy_result.get("deployed"):
+                        result["actions"].append(
+                            f"桥接器下发: {evolved_rule.rule_id} → "
+                            f"{deploy_result.get('targets', [])}"
+                        )
+                    else:
+                        result["actions"].append(
+                            f"桥接器下发未执行: {deploy_result.get('reason', 'unknown')}"
+                        )
+
+        # 4. 异常事件触发红方策略调整
         if event.anomaly_type is not None and event.anomaly_score > 0.5:
             self._adjust_attack_strategy_weights(event, result)
+
+    def _deploy_rule_via_bridge(
+        self, rule: DefenseRule, source_event: Optional[SecurityEvent] = None
+    ) -> Dict[str, Any]:
+        """通过进化-防御桥接器将规则下发到底层沙盒配置"""
+        if self.defense_bridge is None:
+            return {"deployed": False, "reason": "no_bridge"}
+
+        try:
+            deploy_result = self.defense_bridge.deploy_evolved_rules(
+                [rule], source_event=source_event
+            )
+            targets = []
+            for dr in deploy_result.get("deployment_results", []):
+                if dr.get("status") in ("applied", "dry_run", "pending"):
+                    targets.extend(dr.get("targets", []))
+
+            record = {
+                "rule_id": rule.rule_id,
+                "event_id": source_event.event_id if source_event else None,
+                "timestamp": time.time(),
+                "deployed": deploy_result.get("total_config_updates_generated", 0) > 0,
+                "targets": list(set(targets)),
+                "config_updates": deploy_result.get("total_config_updates_generated", 0),
+                "dry_run": deploy_result.get("dry_run", False),
+            }
+            self.bridge_deployment_history.append(record)
+            return record
+        except Exception as e:  # nosec B110 - 桥接器下发失败不应中断主训练循环
+            return {"deployed": False, "reason": f"bridge_error: {str(e)}"}
+
+    def sync_rule_triggers_from_bridge(self) -> Dict[str, Any]:
+        """
+        将桥接器的规则触发监控数据同步回 DefenseRule
+
+        从 EvolutionDefenseBridge 获取每条规则的真阳性/假阳性/失败统计，
+        更新 BlueAgent.defense_rules 中对应规则的触发记录，
+        形成"下发→监控→反馈→再进化"的完整闭环。
+
+        Returns:
+            同步结果统计
+        """
+        if self.defense_bridge is None:
+            return {"synced": 0, "reason": "no_bridge"}
+
+        synced = 0
+        for rule in self.blue_agent.defense_rules:
+            status = self.defense_bridge.get_deployment_status(rule.rule_id)
+            if status is None:
+                continue
+
+            bridge_triggers = status.get("trigger_count", 0)
+            bridge_precision = status.get("precision", 0.0)
+            bridge_failures = status.get("failure_count", 0)
+
+            # 计算需要补充的触发次数（桥接器记录的 - 规则已记录的）
+            current_triggers = rule.trigger_count
+            new_triggers = max(0, bridge_triggers - current_triggers)
+
+            if new_triggers > 0 and bridge_triggers > 0:
+                # 按桥接器的精确率比例分配真阳性/假阳性
+                expected_fp = int(round((1.0 - bridge_precision) * new_triggers))
+                expected_tp = new_triggers - expected_fp
+                for _ in range(expected_tp):
+                    rule.record_trigger(is_true_positive=True)
+                for _ in range(expected_fp):
+                    rule.record_trigger(is_true_positive=False)
+                synced += 1
+
+            # 更新规则的 effectiveness 基于桥接器监控数据
+            if bridge_triggers >= 3:
+                rule.effectiveness = max(0.1, min(0.99, bridge_precision))
+
+        return {
+            "synced": synced,
+            "total_rules": len(self.blue_agent.defense_rules),
+            "bridge_circuit_broken": len(self.defense_bridge.get_circuit_broken_rules()),
+        }
+
+    def get_bridge_deployment_stats(self) -> Dict[str, Any]:
+        """获取桥接器部署统计"""
+        if self.defense_bridge is None:
+            return {"enabled": False}
+
+        bridge_stats = self.defense_bridge.get_stats()
+        return {
+            "enabled": True,
+            "auto_deploy": self.auto_deploy_evolved_rules,
+            "total_deployments": len(self.bridge_deployment_history),
+            "successful_deployments": sum(
+                1 for d in self.bridge_deployment_history if d.get("deployed")
+            ),
+            "bridge_stats": bridge_stats,
+            "recent_deployments": self.bridge_deployment_history[-5:],
+        }
 
     def _adjust_attack_strategy_weights(self, event: SecurityEvent, result: Dict[str, Any]) -> None:
         """调整攻击策略权重并归一化"""

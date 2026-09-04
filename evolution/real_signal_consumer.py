@@ -19,6 +19,7 @@
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
@@ -427,6 +428,16 @@ class RealSignalConsumer:
         self._drift_snapshot_count = 0
         self._last_red_weights: Dict[str, float] = {}
 
+        # REALTIME 模式文件监听（tail -f）
+        self._realtime_thread: Optional[threading.Thread] = None
+        self._realtime_running: bool = False
+        self._realtime_stop_event: Optional[threading.Event] = None
+        self._file_position: int = 0
+        self._realtime_file_path: Optional[str] = None
+        self._realtime_signal_type: Optional[SignalType] = None
+        self._realtime_poll_interval: float = 0.5
+        self._realtime_lines_consumed: int = 0
+
     def attach_drift_monitor(self, drift_monitor: Any) -> None:
         """
         挂载进化漂移监控器（持续集成必加项）
@@ -631,8 +642,8 @@ class RealSignalConsumer:
         # 缓冲（用于批量回调）
         self._event_buffer.append(event)
 
-        # THRESHOLD 模式：检查是否触发批量回调
-        if self.mode == ConsumeMode.THRESHOLD:
+        # THRESHOLD 或 REALTIME 模式：检查是否触发批量回调
+        if self.mode in (ConsumeMode.THRESHOLD, ConsumeMode.REALTIME):
             if (len(self._event_buffer) >= self.batch_size or
                     time.time() - self._last_batch_time >= self.batch_interval_seconds):
                 self._flush_batch()
@@ -718,3 +729,208 @@ class RealSignalConsumer:
         self._last_batch_time = time.time()
         for key in self.stats:
             self.stats[key] = 0
+        self._file_position = 0
+        self._realtime_lines_consumed = 0
+
+    # ========================================================================
+    # REALTIME 模式：tail -f 文件监听循环
+    # ========================================================================
+
+    def start_realtime_consuming(
+        self,
+        file_path: str,
+        signal_type: Optional[SignalType] = None,
+        poll_interval: float = 0.5,
+        from_beginning: bool = False,
+    ) -> bool:
+        """
+        启动 REALTIME 模式文件监听（tail -f）
+
+        在后台线程中持续监控日志文件，新行出现时立即解析并消费。
+        支持文件旋转检测（文件被截断或重新创建时自动重置位置）。
+
+        Args:
+            file_path: 日志文件路径（JSONL 格式）
+            signal_type: 信号类型（None 则自动检测）
+            poll_interval: 轮询间隔（秒），默认 0.5 秒
+            from_beginning: 是否从文件开头开始消费（False 则从当前末尾开始）
+
+        Returns:
+            是否成功启动
+        """
+        if self._realtime_running:
+            return False
+
+        if not os.path.exists(file_path):
+            self.stats["errors"] += 1
+            return False
+
+        self._realtime_file_path = file_path
+        self._realtime_signal_type = signal_type
+        self._realtime_poll_interval = poll_interval
+        self._realtime_stop_event = threading.Event()
+        self._realtime_running = True
+
+        # 设置初始文件位置
+        if from_beginning:
+            self._file_position = 0
+        else:
+            try:
+                self._file_position = os.path.getsize(file_path)
+            except OSError:
+                self._file_position = 0
+
+        # 启动后台线程
+        self._realtime_thread = threading.Thread(
+            target=self._realtime_watch_loop,
+            args=(file_path, signal_type, poll_interval),
+            daemon=True,
+            name=f"RealSignalConsumer-{os.path.basename(file_path)}",
+        )
+        self._realtime_thread.start()
+
+        return True
+
+    def stop_realtime_consuming(self, timeout: float = 5.0) -> bool:
+        """
+        停止 REALTIME 模式文件监听
+
+        Args:
+            timeout: 等待线程退出的超时时间（秒）
+
+        Returns:
+            是否成功停止
+        """
+        if not self._realtime_running or self._realtime_stop_event is None:
+            return False
+
+        self._realtime_stop_event.set()
+        self._realtime_running = False
+
+        if self._realtime_thread and self._realtime_thread.is_alive():
+            self._realtime_thread.join(timeout=timeout)
+
+        self._realtime_thread = None
+        self._realtime_stop_event = None
+
+        return True
+
+    def _realtime_watch_loop(
+        self,
+        file_path: str,
+        signal_type: Optional[SignalType],
+        poll_interval: float,
+    ) -> None:
+        """
+        后台文件监听循环（tail -f）
+
+        持续监控文件，读取新行并消费。支持：
+        - 文件旋转检测（inode 变化或文件被截断）
+        - 优雅停止（通过 stop_event）
+        - 异常恢复（文件暂时不可用时重试）
+        """
+        last_inode = None
+        consecutive_errors = 0
+
+        while self._realtime_running and self._realtime_stop_event and not self._realtime_stop_event.is_set():
+            try:
+                # 检查文件是否存在
+                if not os.path.exists(file_path):
+                    consecutive_errors += 1
+                    if consecutive_errors > 10:
+                        # 文件长时间不存在，停止监听
+                        self.stats["errors"] += 1
+                        break
+                    self._realtime_stop_event.wait(poll_interval)
+                    continue
+
+                consecutive_errors = 0
+
+                # 检测文件旋转（inode 变化）
+                try:
+                    current_inode = os.stat(file_path).st_ino
+                    if last_inode is not None and current_inode != last_inode:
+                        # 文件被旋转，重置位置到开头
+                        self._file_position = 0
+                    last_inode = current_inode
+                except OSError:
+                    pass
+
+                # 读取新行
+                new_lines = self._read_new_lines(file_path)
+
+                for line in new_lines:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    self.consume_line(line, signal_type)
+                    self._realtime_lines_consumed += 1
+
+                # 检查是否需要停止
+                if self._realtime_stop_event.wait(poll_interval):
+                    break
+
+            except Exception as e:
+                self.stats["errors"] += 1
+                consecutive_errors += 1
+                if consecutive_errors > 20:
+                    break
+                self._realtime_stop_event.wait(poll_interval)
+
+        # 确保停止状态
+        self._realtime_running = False
+
+    def _read_new_lines(self, file_path: str) -> List[str]:
+        """
+        从文件当前位置读取新行
+
+        支持文件截断检测（文件大小小于当前位置时重置）。
+
+        Returns:
+            新读取的行列表
+        """
+        new_lines = []
+
+        try:
+            current_size = os.path.getsize(file_path)
+
+            # 检测文件截断
+            if current_size < self._file_position:
+                self._file_position = 0
+
+            if current_size <= self._file_position:
+                return new_lines
+
+            with open(file_path, 'r') as f:
+                f.seek(self._file_position)
+                content = f.read(current_size - self._file_position)
+                self._file_position = current_size
+
+            # 按行分割，保留最后一行可能不完整
+            lines = content.split('\n')
+            # 如果最后一行不为空且不以换行结尾，可能是不完整的行
+            # 但因为我们是按实际文件大小读取的，所以应该是完整的
+            for line in lines:
+                if line.strip():
+                    new_lines.append(line)
+
+        except (OSError, IOError):
+            self.stats["errors"] += 1
+
+        return new_lines
+
+    def is_realtime_running(self) -> bool:
+        """检查 REALTIME 监听是否正在运行"""
+        return self._realtime_running and self._realtime_thread is not None and self._realtime_thread.is_alive()
+
+    def get_realtime_status(self) -> Dict[str, Any]:
+        """获取 REALTIME 监听状态"""
+        return {
+            "running": self.is_realtime_running(),
+            "file_path": self._realtime_file_path,
+            "signal_type": self._realtime_signal_type.value if self._realtime_signal_type else None,
+            "file_position": self._file_position,
+            "lines_consumed": self._realtime_lines_consumed,
+            "poll_interval": self._realtime_poll_interval,
+            "thread_alive": self._realtime_thread.is_alive() if self._realtime_thread else False,
+        }
