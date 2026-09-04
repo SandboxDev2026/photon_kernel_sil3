@@ -5,9 +5,12 @@ namespace sandbox {
 
 std::string risk_level_to_string(RiskLevel level) {
     switch (level) {
-        case RiskLevel::LOW:   return "LOW";
-        case RiskLevel::MEDIUM: return "MEDIUM";
-        case RiskLevel::HIGH:  return "HIGH";
+        case RiskLevel::CRITICAL: return "CRITICAL";
+        case RiskLevel::HIGH:     return "HIGH";
+        case RiskLevel::MEDIUM:   return "MEDIUM";
+        case RiskLevel::LOW:      return "LOW";
+        case RiskLevel::INFO:     return "INFO";
+        case RiskLevel::SAFE:     return "SAFE";
         default: return "UNKNOWN";
     }
 }

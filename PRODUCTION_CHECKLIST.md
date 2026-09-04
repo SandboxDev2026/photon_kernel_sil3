@@ -86,6 +86,56 @@
 | 制度性测试 | PR准入规则（沙盒修改必须附带对抗用例）+ 季度人工红蓝演练机制 | ✅ 文档已定义 |
 | 安全测试用例 | 20个测试：seccomp安全(8) + 资源隔离(4) + 逃逸路径(4) + 审计完整性(4) | ✅ 20/20通过 |
 
+### 2.3 运行时安全态势检测（深层威胁防护）
+
+> 覆盖三类深层威胁：内核 0day 逃逸、侧信道攻击（Spectre/Meltdown）、硬件级攻击（Rowhammer）。
+> 模块：include/photon_kernel/sandbox/security_posture.hpp + src/sandbox/security_posture.cpp
+> 测试：tests/test_security_posture.cpp（27个测试，全部通过）
+
+| 项 | 检测内容 | 状态 |
+|----|---------|------|
+| 内核版本与CVE | 检测内核版本，评估已知 0day/CVE 风险 | ✅ 已实现（KERNEL-001） |
+| 内核命令行安全参数 | slab_nomerge/init_on_alloc/init_on_free/page_poison/pti | ✅ 已实现（KERNEL-002） |
+| 已加载模块审计 | 禁用高风险文件系统和网络模块 | ✅ 已实现（KERNEL-003） |
+| 内核热补丁 | kpatch/canonical-livepatch 检测 | ✅ 已实现（KERNEL-004） |
+| seccomp-BPF支持 | KILL_PROCESS 动作支持检测 | ✅ 已实现（KERNEL-005） |
+| Landlock支持 | 非特权文件系统访问控制 | ✅ 已实现（KERNEL-006） |
+| 命名空间隔离 | 7种命名空间支持检测 | ✅ 已实现（KERNEL-007） |
+| 模块签名强制 | CONFIG_MODULE_SIG_FORCE 检测 | ✅ 已实现（KERNEL-008） |
+| Spectre v1/v2/v4 | 推测执行漏洞防护状态 | ✅ 已实现（SIDE-001/002/003） |
+| Meltdown | 内核内存读取漏洞（KPTI） | ✅ 已实现（SIDE-004，CRITICAL级） |
+| L1TF/Foreshadow | L1缓存终端故障 | ✅ 已实现（SIDE-005） |
+| MDS/ZombieLoad | 微架构数据采样 | ✅ 已实现（SIDE-006） |
+| SwapGS/SRSO/GDS | 其他侧信道漏洞 | ✅ 已实现（SIDE-007/008/009） |
+| CPU微码版本 | 最新微码更新检测 | ✅ 已实现（SIDE-010） |
+| SMT/超线程状态 | 侧信道攻击重要因素 | ✅ 已实现（SIDE-011） |
+| KPTI/Retpoline | 内核页表隔离和间接分支防护 | ✅ 已实现（SIDE-012/013） |
+| perf_event限制 | 防止perf侧信道（Prime+Probe） | ✅ 已实现（SIDE-014） |
+| ECC内存 | 纠错码内存检测（Rowhammer防护） | ✅ 已实现（HW-001） |
+| Rowhammer/TRR | 目标行刷新防护检测 | ✅ 已实现（HW-002） |
+| HugePages使用 | 大页内存增加Rowhammer攻击面 | ✅ 已实现（HW-003） |
+| 内存清零 | init_on_alloc/init_on_free | ✅ 已实现（HW-004） |
+| cgroup内存隔离 | 沙盒间内存隔离和限制 | ✅ 已实现（HW-005） |
+| IOMMU/DMA防护 | Intel VT-d / AMD-Vi | ✅ 已实现（HW-006） |
+| Secure Boot | UEFI安全启动（防bootkit） | ✅ 已实现（HW-007） |
+| TPM可信平台模块 | 密钥存储和远程证明 | ✅ 已实现（HW-008） |
+| 总体评分与报告 | JSON/Markdown双格式输出，0-100评分 | ✅ 已实现 |
+| 宿主机加固脚本生成 | 自动生成shell加固脚本 | ✅ 已实现 |
+| 额外seccomp限制建议 | 根据防护状态动态建议 | ✅ 已实现 |
+
+**使用方式**：
+```cpp
+#include "photon_kernel/sandbox/security_posture.hpp"
+using namespace photon_kernel::sandbox;
+
+auto report = SecurityPostureEvaluator::evaluate();
+std::cout << "总体安全评分: " << report.overall_score << "/100" << std::endl;
+std::cout << report.to_markdown() << std::endl;
+
+// 生成加固脚本
+std::string script = SecurityPostureEvaluator::generate_hardening_script(report);
+```
+
 ### 2.2 CapabilityToken / ResourceProxy
 
 | 项 | 验证内容 | 状态 |
