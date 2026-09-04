@@ -271,7 +271,7 @@
 - `docs/security/SECURE_CODING_STANDARDS.md` — 安全编码规范
 - `docs/security/VULNERABILITY_SLA.md` — 漏洞修复 SLA
 - `docs/security/COMPLIANCE_ROADMAP.md` — 合规路线图
-- `docs/audit/AUDIT_INPUT_PACKAGE.md` — 第三方审计输入包
+- `docs/audit/SECURITY_SELF_ASSESSMENT.md` — 安全自评估报告
 - `PRODUCTION_CHECKLIST.md` — 生产上线检查清单
 - `SECURITY.md` — 安全公告与漏洞报告
 

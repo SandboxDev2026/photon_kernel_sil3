@@ -54,7 +54,7 @@
 
 #### 1.1.3 其他文档
 - **漏洞修复 SLA**: ✅ 已完成 (`docs/security/VULNERABILITY_SLA.md`)
-- **第三方审计输入包**: ✅ 已完成 (`docs/audit/AUDIT_INPUT_PACKAGE.md`)
+- **安全自评估报告**: ✅ 已完成 (`docs/audit/SECURITY_SELF_ASSESSMENT.md`)
 - **生产上线检查清单**: 已有 (`PRODUCTION_CHECKLIST.md`)
 - **安全边界声明**: 已有 (`docs/SECURITY_BOUNDARY.md`)
 - **应急响应 runbook**: 已有 (`docs/ops/circuit_breaker_runbook.md`)
@@ -206,7 +206,7 @@
   - ✅ 安全编码规范
   - ✅ 漏洞修复 SLA
   - ✅ SBOM
-  - ✅ 第三方审计输入包 (`docs/audit/AUDIT_INPUT_PACKAGE.md`)
+  - ✅ 安全自评估报告 (`docs/audit/SECURITY_SELF_ASSESSMENT.md`)
   - ⏳ 威胁模型文档
   - ⏳ 风险评估报告
   - ⏳ 业务影响分析
@@ -352,7 +352,7 @@
 8. **持续合规**: 每年监督审计，每 3 年重新认证
 
 #### 3.2.3 独立第三方安全审计
-- **审计范围**（详见 `docs/audit/AUDIT_INPUT_PACKAGE.md`）:
+- **审计范围**（详见 `docs/audit/SECURITY_SELF_ASSESSMENT.md`）:
   - 底层沙盒（C++）：LightPool、StrongPool、eBPF、控制平面
   - 上层进化框架（Python）：红蓝对抗、真实信号消费、进化-防御桥接器
   - 量子启发安全模块
@@ -450,7 +450,7 @@
 - `docs/security/INFORMATION_SECURITY_POLICY.md` — 信息安全政策
 - `docs/security/SECURE_CODING_STANDARDS.md` — 安全编码规范
 - `docs/security/VULNERABILITY_SLA.md` — 漏洞修复 SLA
-- `docs/audit/AUDIT_INPUT_PACKAGE.md` — 第三方审计输入包
+- `docs/audit/SECURITY_SELF_ASSESSMENT.md` — 安全自评估报告
 - `sbom.cdx.json` — 软件物料清单（CycloneDX 格式）
 - `PRODUCTION_CHECKLIST.md` — 生产上线检查清单
 - `SECURITY.md` — 安全公告与漏洞报告

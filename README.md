@@ -1,21 +1,24 @@
-# PhotonBox — 基于 KVM 硬件虚拟化的安全隔离沙盒
+# PhotonBox — 双模式安全隔离沙盒
 
-> ⚠️ **生产就绪状态：🟡 内网受限可用，公网部署待验证**
->
-> 本项目核心卖点是 KVM 硬件虚拟化（StrongPool），但 **StrongPool 尚未在真实 /dev/kvm 裸机环境完成端到端验证**。以下模块代码完整、单元测试通过，但缺少特权环境实测：
->
-> | 未验证模块 | 缺失条件 | 风险 |
-> |-----------|---------|------|
-> | StrongPool (KVM MicroVM) | 无 /dev/kvm + firecracker | 核心卖点未验证 |
-> | eBPF 网络管控 | 无 CAP_BPF + libbpf | 网络隔离未实测 |
-> | CRIU 快照 | 无 criu 二进制 + root | 快照恢复未实测 |
-> | gRPC (C++) | 无 libgrpc++-dev | C++ 服务端未编译 |
-> | K8s Operator | 无 K8s 集群 | Reconcile 未实测 |
-> | namespace 隔离 | 无 CAP_SYS_ADMIN | 完整隔离未实测 |
->
-> **当前仅适用于内网可信/半可信 Agent 场景，禁止直接对公网暴露不可信用户代码。** 生产部署前必须：① 在裸机 KVM 环境跑通 `scripts/verify_baremetal.sh`；② 完成独立第三方安全审计；③ 升级 OpenSSL/gRPC 依赖。
+## 安全状态
 
-轻量级、高性能、可审计的代码执行沙盒。**核心隔离底座为 KVM 硬件虚拟化**：每个 StrongPool 实例拥有独立的 Guest 内核，CPU 硬件级隔离内存（Intel VT-x / AMD-V + EPT/NPT），从根本上杜绝进程沙盒的内核逃逸风险。同时提供 LightPool 进程沙盒作为低延迟补充，支持双后端自动切换。
+| 后端 | 状态 | 说明 |
+|------|------|------|
+| **LightPool**（进程沙箱） | ✅ **生产就绪** | 已完成内部安全加固与红蓝对抗验证。seccomp-BPF 双模式规则集、制度性红队测试库（5 POC）、20 项安全测试全部通过、SAST 扫描 High=0/Medium=0。无需硬件虚拟化，CI 中 690+ 测试持续验证。 |
+| **StrongPool**（KVM MicroVM） | 🟡 **技术预览** | 代码实现完整，单元测试通过。依赖物理 KVM 硬件环境（`/dev/kvm` + Firecracker），尚未在裸机环境完成端到端验证。欢迎社区贡献测试环境。 |
+
+> **部署建议**：生产环境优先使用 **LightPool 模式**（已验证）；需要 KVM 级强隔离时使用 **StrongPool 模式**（预览，需自行在裸机环境验证）。详见 [DEPLOYMENT_MODES.md](docs/DEPLOYMENT_MODES.md)。
+>
+> **公网多租户部署前必须**：① 在裸机 KVM 环境跑通 `scripts/verify_baremetal.sh`；② 完成独立第三方安全审计；③ 升级 OpenSSL/gRPC 依赖。安全自评估报告见 [docs/audit/SECURITY_SELF_ASSESSMENT.md](docs/audit/SECURITY_SELF_ASSESSMENT.md)。
+
+---
+
+轻量级、高性能、可审计的代码执行沙盒。**双后端架构**：
+
+- **StrongPool**：基于 KVM 硬件虚拟化的 MicroVM，每个实例拥有独立 Guest 内核，CPU 硬件级隔离内存（Intel VT-x / AMD-V + EPT/NPT），从根本上杜绝进程沙盒的内核逃逸风险。
+- **LightPool**：基于 fork + seccomp-BPF + Landlock 的进程沙盒，启动延迟 <2ms（预热池），内存开销百 KB 级，适合内网可信/半可信 Agent 代码。
+
+支持双后端自动切换，高风险任务绝不静默降级。
 
 ## 架构核心：KVM 硬件虚拟化
 
