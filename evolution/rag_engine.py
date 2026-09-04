@@ -303,58 +303,31 @@ class RAGEngine:
         strategy = strategy or self.strategy
 
         # 缓存检查
-        cache_key = hashlib.md5(f"{query}:{','.join(kb_names or [])}:{top_k}:{strategy.value}".encode(), usedforsecurity=False).hexdigest()
-        if use_cache and cache_key in self._cache:
-            self._stats["cache_hits"] += 1
-            return self._cache[cache_key]
+        cached = self._check_cache(query, kb_names, top_k, strategy, use_cache)
+        if cached is not None:
+            return cached
 
         # 1. Query 重写
         rewritten_query = self._query_rewriter.rewrite(query)
 
         # 2. 多知识库检索
-        all_results = []
-        target_kbs = kb_names or list(self._knowledge_bases.keys())
-        for kb_name in target_kbs:
-            kb = self._knowledge_bases.get(kb_name)
-            if not kb:
-                continue
-            kb_results = kb.search(rewritten_query, top_k=top_k * 2)
-            for r in kb_results:
-                all_results.append(RetrievalResult(
-                    doc_id=r["entry_id"],
-                    content=r["content"],
-                    score=r["score"],
-                    metadata=r.get("metadata", {}),
-                    source_kb=kb_name,
-                ))
+        all_results = self._search_all_knowledge_bases(rewritten_query, kb_names, top_k)
 
-        # 3. 混合检索加权（如果是 HYBRID 策略）
-        if strategy in (RetrievalStrategy.HYBRID, RetrievalStrategy.RERANK):
-            all_results = self._hybrid_merge(all_results)
+        # 3. 应用检索策略（混合/重排序）
+        all_results = self._apply_retrieval_strategy(all_results, strategy, rewritten_query)
 
-        # 4. 重排序（如果是 RERANK 策略）
-        if strategy == RetrievalStrategy.RERANK:
-            all_results = self._reranker.rerank(all_results, rewritten_query)
+        # 4. 截断到 top_k 并设置排名
+        all_results = self._truncate_and_rank(all_results, top_k)
 
-        # 5. 截断到 top_k
-        all_results = all_results[:top_k]
-        for i, r in enumerate(all_results):
-            r.rank = i + 1
-
-        # 6. 构建上下文字符串
+        # 5. 构建上下文
         context_text = self._build_context_text(query, all_results)
         sources = list(set(r.source_kb for r in all_results))
-
         retrieval_time_ms = (time.time() - start_time) * 1000
 
-        # 更新统计
-        self._stats["total_queries"] += 1
-        self._stats["total_results"] += len(all_results)
-        self._stats["avg_retrieval_time_ms"] = (
-            (self._stats["avg_retrieval_time_ms"] * (self._stats["total_queries"] - 1)
-             + retrieval_time_ms) / self._stats["total_queries"]
-        )
+        # 6. 更新统计
+        self._update_retrieval_stats(len(all_results), retrieval_time_ms)
 
+        # 7. 构建 RAGContext
         context = RAGContext(
             query=query,
             rewritten_query=rewritten_query,
@@ -366,15 +339,89 @@ class RAGEngine:
             strategy=strategy.value,
         )
 
-        # 缓存
-        if use_cache:
-            self._cache[cache_key] = context
-            if len(self._cache) > 100:
-                # 清理旧缓存
-                old_key = next(iter(self._cache))
-                del self._cache[old_key]
+        # 8. 缓存
+        self._cache_result(query, kb_names, top_k, strategy, use_cache, context)
 
         return context
+
+    def _check_cache(self, query: str, kb_names: Optional[List[str]],
+                     top_k: int, strategy: RetrievalStrategy,
+                     use_cache: bool) -> Optional[RAGContext]:
+        """检查缓存，如果命中则返回缓存结果"""
+        if not use_cache:
+            return None
+        cache_key = hashlib.md5(
+            f"{query}:{','.join(kb_names or [])}:{top_k}:{strategy.value}".encode(),
+            usedforsecurity=False
+        ).hexdigest()
+        if cache_key in self._cache:
+            self._stats["cache_hits"] += 1
+            return self._cache[cache_key]
+        return None
+
+    def _search_all_knowledge_bases(self, query: str,
+                                     kb_names: Optional[List[str]],
+                                     top_k: int) -> List[RetrievalResult]:
+        """多知识库检索"""
+        all_results = []
+        target_kbs = kb_names or list(self._knowledge_bases.keys())
+        for kb_name in target_kbs:
+            kb = self._knowledge_bases.get(kb_name)
+            if not kb:
+                continue
+            kb_results = kb.search(query, top_k=top_k * 2)
+            for r in kb_results:
+                all_results.append(RetrievalResult(
+                    doc_id=r["entry_id"],
+                    content=r["content"],
+                    score=r["score"],
+                    metadata=r.get("metadata", {}),
+                    source_kb=kb_name,
+                ))
+        return all_results
+
+    def _apply_retrieval_strategy(self, results: List[RetrievalResult],
+                                   strategy: RetrievalStrategy,
+                                   query: str) -> List[RetrievalResult]:
+        """应用检索策略（混合加权/重排序）"""
+        if strategy in (RetrievalStrategy.HYBRID, RetrievalStrategy.RERANK):
+            results = self._hybrid_merge(results)
+        if strategy == RetrievalStrategy.RERANK:
+            results = self._reranker.rerank(results, query)
+        return results
+
+    def _truncate_and_rank(self, results: List[RetrievalResult],
+                            top_k: int) -> List[RetrievalResult]:
+        """截断到 top_k 并设置排名"""
+        results = results[:top_k]
+        for i, r in enumerate(results):
+            r.rank = i + 1
+        return results
+
+    def _update_retrieval_stats(self, num_results: int, retrieval_time_ms: float):
+        """更新检索统计信息"""
+        self._stats["total_queries"] += 1
+        self._stats["total_results"] += num_results
+        total = self._stats["total_queries"]
+        self._stats["avg_retrieval_time_ms"] = (
+            (self._stats["avg_retrieval_time_ms"] * (total - 1)
+             + retrieval_time_ms) / total
+        )
+
+    def _cache_result(self, query: str, kb_names: Optional[List[str]],
+                      top_k: int, strategy: RetrievalStrategy,
+                      use_cache: bool, context: RAGContext):
+        """缓存检索结果，超过容量时清理旧缓存"""
+        if not use_cache:
+            return
+        cache_key = hashlib.md5(
+            f"{query}:{','.join(kb_names or [])}:{top_k}:{strategy.value}".encode(),
+            usedforsecurity=False
+        ).hexdigest()
+        self._cache[cache_key] = context
+        if len(self._cache) > 100:
+            old_key = next(iter(self._cache))
+            del self._cache[old_key]
 
     def build_prompt(self, template: str, context: RAGContext,
                      **kwargs) -> str:
