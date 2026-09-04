@@ -649,7 +649,14 @@ class RedBlueAdversaryTrainer:
         Returns:
             摄入结果，包含事件处理状态和触发的进化动作
         """
-        result = {
+        result = self._init_ingest_result(event)
+        self._process_event_evolution(event, result)
+        self._record_event_history(event, result["triggered_evolution"])
+        return result
+
+    def _init_ingest_result(self, event: SecurityEvent) -> Dict[str, Any]:
+        """初始化摄入结果字典"""
+        return {
             "event_id": event.event_id,
             "source": event.source.value,
             "severity": event.severity,
@@ -658,6 +665,8 @@ class RedBlueAdversaryTrainer:
             "actions": [],
         }
 
+    def _process_event_evolution(self, event: SecurityEvent, result: Dict[str, Any]) -> None:
+        """处理事件触发的进化：攻击用例+防御进化+策略调整"""
         # 1. 将真实事件转换为攻击用例（红方学习）
         attack_case = self._convert_event_to_attack_case(event)
         if attack_case:
@@ -666,7 +675,6 @@ class RedBlueAdversaryTrainer:
 
         # 2. 根据事件严重程度触发防御进化
         if event.severity in ["high", "critical"]:
-            # 高严重度事件触发防御规则进化
             evolved_rule = self._evolve_defense_from_event(event)
             if evolved_rule:
                 self.blue_agent.defense_rules.append(evolved_rule)
@@ -675,18 +683,21 @@ class RedBlueAdversaryTrainer:
 
         # 3. 异常事件触发红方策略调整
         if event.anomaly_type is not None and event.anomaly_score > 0.5:
-            # 异常事件表明攻击可能成功，增加对应攻击类型权重
-            attack_type = self._map_source_to_attack_type(event.source)
-            if attack_type:
-                self.red_agent.strategy_weights[attack_type] *= 1.2
-                # 归一化
-                total = sum(self.red_agent.strategy_weights.values())
-                for k in self.red_agent.strategy_weights:
-                    self.red_agent.strategy_weights[k] /= total
-                result["triggered_evolution"] = True
-                result["actions"].append(f"调整攻击策略权重: {attack_type.value} +20%")
+            self._adjust_attack_strategy_weights(event, result)
 
-        # 4. 记录真实事件摄入历史
+    def _adjust_attack_strategy_weights(self, event: SecurityEvent, result: Dict[str, Any]) -> None:
+        """调整攻击策略权重并归一化"""
+        attack_type = self._map_source_to_attack_type(event.source)
+        if attack_type:
+            self.red_agent.strategy_weights[attack_type] *= 1.2
+            total = sum(self.red_agent.strategy_weights.values())
+            for k in self.red_agent.strategy_weights:
+                self.red_agent.strategy_weights[k] /= total
+            result["triggered_evolution"] = True
+            result["actions"].append(f"调整攻击策略权重: {attack_type.value} +20%")
+
+    def _record_event_history(self, event: SecurityEvent, triggered_evolution: bool) -> None:
+        """记录真实事件摄入历史"""
         self.real_event_history.append({
             "event_id": event.event_id,
             "source": event.source.value,
@@ -694,10 +705,8 @@ class RedBlueAdversaryTrainer:
             "anomaly_type": event.anomaly_type.value if event.anomaly_type else None,
             "anomaly_score": event.anomaly_score,
             "timestamp": event.timestamp,
-            "triggered_evolution": result["triggered_evolution"],
+            "triggered_evolution": triggered_evolution,
         })
-
-        return result
 
     def ingest_real_events(self, events: List[SecurityEvent]) -> Dict[str, Any]:
         """
