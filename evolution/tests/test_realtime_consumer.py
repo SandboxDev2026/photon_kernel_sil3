@@ -199,7 +199,11 @@ class TestRealtimeFileWatching(unittest.TestCase):
         with open(self.tmp_file.name, 'w') as f:
             f.write(make_seccomp_event(syscall="mount") + '\n')
 
-        time.sleep(0.5)
+        # 等待事件消费（最多等待3秒，每0.1秒检查一次）
+        for _ in range(30):
+            if len(consumed_events) >= 2:
+                break
+            time.sleep(0.1)
 
         # 应该消费了2行（截断前1行 + 截断后1行）
         self.assertGreaterEqual(len(consumed_events), 2)

@@ -433,6 +433,8 @@ class RealSignalConsumer:
         self._realtime_running: bool = False
         self._realtime_stop_event: Optional[threading.Event] = None
         self._file_position: int = 0
+        self._last_file_size: int = 0
+        self._last_mtime_ns: int = 0
         self._realtime_file_path: Optional[str] = None
         self._realtime_signal_type: Optional[SignalType] = None
         self._realtime_poll_interval: float = 0.5
@@ -892,11 +894,22 @@ class RealSignalConsumer:
         new_lines = []
 
         try:
-            current_size = os.path.getsize(file_path)
+            current_stat = os.stat(file_path)
+            current_size = current_stat.st_size
+            current_mtime_ns = current_stat.st_mtime_ns
 
-            # 检测文件截断
-            if current_size < self._file_position:
+            # 检测文件截断：三种情况
+            # 1. 当前大小 < 当前读取位置（明显截断）
+            # 2. 文件被修改过(mtime_ns变化)且当前大小 <= 当前位置（截断后重写，内容可能等大）
+            # 3. 文件被修改过(mtime_ns变化)且当前大小 < 上一次大小（截断后写入更少内容）
+            file_modified = current_mtime_ns > self._last_mtime_ns and self._last_mtime_ns > 0
+            if (current_size < self._file_position or
+                (file_modified and current_size <= self._file_position) or
+                (file_modified and current_size < self._last_file_size)):
                 self._file_position = 0
+
+            self._last_file_size = current_size
+            self._last_mtime_ns = current_mtime_ns
 
             if current_size <= self._file_position:
                 return new_lines

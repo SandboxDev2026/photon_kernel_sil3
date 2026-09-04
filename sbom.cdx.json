@@ -1,0 +1,279 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "serialNumber": "urn:uuid:photonbox-sbom-20260905",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-09-05T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "PhotonBox",
+        "name": "Manual SBOM Generator",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "application",
+      "bom-ref": "photonbox@4.14.0",
+      "name": "PhotonBox",
+      "version": "4.14.0",
+      "description": "C++17 安全隔离沙盒引擎：StrongPool(Firecracker MicroVM) + LightPool(namespace+seccomp+Landlock) + eBPF网络过滤 + 红蓝对抗自进化框架",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0",
+            "url": "https://www.apache.org/licenses/LICENSE-2.0"
+          }
+        }
+      ],
+      "supplier": {
+        "name": "PhotonBox Project Team"
+      },
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/SandboxDev2026/photon_kernel_sil3"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/SandboxDev2026/photon_kernel_sil3"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/protobuf@7.36.1",
+      "name": "protobuf",
+      "version": "7.36.1",
+      "description": "Protocol Buffers - Google's data interchange format",
+      "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+      "purl": "pkg:pypi/protobuf@7.36.1",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pydantic@2.11.7",
+      "name": "pydantic",
+      "version": "2.11.7",
+      "description": "Data validation using Python type hints",
+      "licenses": [{"license": {"id": "MIT"}}],
+      "purl": "pkg:pypi/pydantic@2.11.7",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pyyaml@6.0.3",
+      "name": "PyYAML",
+      "version": "6.0.3",
+      "description": "YAML parser and emitter for Python",
+      "licenses": [{"license": {"id": "MIT"}}],
+      "purl": "pkg:pypi/pyyaml@6.0.3",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/requests@2.34.2",
+      "name": "requests",
+      "version": "2.34.2",
+      "description": "Python HTTP for Humans",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:pypi/requests@2.34.2",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/numpy@1.26.4",
+      "name": "numpy",
+      "version": "1.26.4",
+      "description": "Fundamental package for array computing in Python",
+      "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+      "purl": "pkg:pypi/numpy@1.26.4",
+      "scope": "required"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/scipy@1.17.1",
+      "name": "scipy",
+      "version": "1.17.1",
+      "description": "Scientific computing library for Python",
+      "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+      "purl": "pkg:pypi/scipy@1.17.1",
+      "scope": "optional"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/openssl@3.0.2",
+      "name": "OpenSSL",
+      "version": "3.0.2",
+      "description": "Cryptography and SSL/TLS Toolkit (系统级，容器环境版本，生产需升级到≥3.0.7)",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:cpp/openssl@3.0.2",
+      "scope": "optional",
+      "notes": "系统级依赖，容器环境为3.0.2存在CVE-2022-3602，生产部署必须升级到≥3.0.7"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/grpc@1.56.0",
+      "name": "gRPC",
+      "version": "1.56.0",
+      "description": "gRPC C++ library (编译时可选，当前环境未安装)",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:cpp/grpc@1.56.0",
+      "scope": "optional",
+      "notes": "C++ gRPC库，当前容器环境未安装libgrpc++-dev；生产需≥1.56修复CVE-2023-44487"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/firecracker@1.5.0",
+      "name": "Firecracker",
+      "version": "1.5.0",
+      "description": "Firecracker MicroVM hypervisor (StrongPool底层依赖，需裸机KVM环境)",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:cpp/firecracker@1.5.0",
+      "scope": "optional",
+      "notes": "StrongPool(MicroVM)底层依赖，需/dev/kvm硬件虚拟化；生产需≥1.5修复CVE-2023-41051"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/libbpf@1.3.0",
+      "name": "libbpf",
+      "version": "1.3.0",
+      "description": "eBPF library (eBPF网络过滤模块依赖，需CAP_BPF)",
+      "licenses": [{"license": {"id": "LGPL-2.1-only"}}],
+      "purl": "pkg:cpp/libbpf@1.3.0",
+      "scope": "optional",
+      "notes": "eBPF网络过滤模块依赖，需内核≥5.8和CAP_BPF能力"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/criu@3.18.0",
+      "name": "CRIU",
+      "version": "3.18.0",
+      "description": "Checkpoint/Restore In Userspace (进程快照恢复，可选高级功能)",
+      "licenses": [{"license": {"id": "GPL-2.0-only"}}],
+      "purl": "pkg:cpp/criu@3.18.0",
+      "scope": "optional",
+      "notes": "进程快照恢复功能，可选高级特性，关闭不影响基础沙盒运行；需root权限"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/gtest@1.14.0",
+      "name": "GoogleTest",
+      "version": "1.14.0",
+      "description": "Google Testing Framework (C++单元测试)",
+      "licenses": [{"license": {"id": "BSD-3-Clause"}}],
+      "purl": "pkg:cpp/gtest@1.14.0",
+      "scope": "development"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:cpp/benchmark@1.8.3",
+      "name": "Google Benchmark",
+      "version": "1.8.3",
+      "description": "Microbenchmark support library (性能测试)",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:cpp/benchmark@1.8.3",
+      "scope": "development"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/bandit@1.7.10",
+      "name": "bandit",
+      "version": "1.7.10",
+      "description": "Python SAST security scanner",
+      "licenses": [{"license": {"id": "Apache-2.0"}}],
+      "purl": "pkg:pypi/bandit@1.7.10",
+      "scope": "development"
+    },
+    {
+      "type": "library",
+      "bom-ref": "pkg:pypi/pytest@8.0.0",
+      "name": "pytest",
+      "version": "8.0.0",
+      "description": "Python testing framework",
+      "licenses": [{"license": {"id": "MIT"}}],
+      "purl": "pkg:pypi/pytest@8.0.0",
+      "scope": "development"
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "photonbox@4.14.0",
+      "dependsOn": [
+        "pkg:pypi/protobuf@7.36.1",
+        "pkg:pypi/pydantic@2.11.7",
+        "pkg:pypi/pyyaml@6.0.3",
+        "pkg:pypi/requests@2.34.2",
+        "pkg:pypi/numpy@1.26.4",
+        "pkg:cpp/openssl@3.0.2",
+        "pkg:cpp/grpc@1.56.0",
+        "pkg:cpp/firecracker@1.5.0",
+        "pkg:cpp/libbpf@1.3.0",
+        "pkg:cpp/criu@3.18.0"
+      ]
+    }
+  ],
+  "vulnerabilities": [
+    {
+      "id": "CVE-2022-3602",
+      "source": {"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/CVE-2022-3602"},
+      "ratings": [{"severity": "high", "score": 7.5, "method": "CVSSv3.1"}],
+      "description": "OpenSSL 3.0.0 - 3.0.6 X.509 证书验证中的缓冲区溢出，可能导致拒绝服务或远程代码执行",
+      "affects": [{"ref": "pkg:cpp/openssl@3.0.2"}],
+      "recommendation": "升级到 OpenSSL ≥ 3.0.7；当前容器环境系统级OpenSSL为3.0.2，生产部署前必须在有sudo权限的环境升级",
+      "status": "known_not_fixed_in_environment"
+    },
+    {
+      "id": "CVE-2023-44487",
+      "source": {"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/CVE-2023-44487"},
+      "ratings": [{"severity": "high", "score": 7.5, "method": "CVSSv3.1"}],
+      "description": "HTTP/2 快速重置攻击，可导致拒绝服务；影响 gRPC/HTTP2 实现",
+      "affects": [{"ref": "pkg:cpp/grpc@1.56.0"}],
+      "recommendation": "升级到 gRPC ≥ 1.56；Python侧grpcio已升级到1.83.1修复，C++侧需安装libgrpc++-dev≥1.56",
+      "status": "partially_fixed_python_only"
+    },
+    {
+      "id": "CVE-2023-41051",
+      "source": {"name": "NVD", "url": "https://nvd.nist.gov/vuln/detail/CVE-2023-41051"},
+      "ratings": [{"severity": "medium", "score": 5.3, "method": "CVSSv3.1"}],
+      "description": "Firecracker virtio-vsock 实现中的漏洞，可能导致信息泄露",
+      "affects": [{"ref": "pkg:cpp/firecracker@1.5.0"}],
+      "recommendation": "升级到 Firecracker ≥ 1.5；当前版本已包含修复",
+      "status": "fixed_in_recommended_version"
+    }
+  ],
+  "licenses": {
+    "summary": {
+      "Apache-2.0": ["PhotonBox", "requests", "gRPC", "Firecracker", "Google Benchmark", "bandit", "OpenSSL"],
+      "MIT": ["pydantic", "PyYAML", "pytest"],
+      "BSD-3-Clause": ["protobuf", "numpy", "scipy", "GoogleTest"],
+      "LGPL-2.1-only": ["libbpf"],
+      "GPL-2.0-only": ["CRIU"]
+    },
+    "notes": [
+      "CRIU 为 GPL-2.0，作为独立外部工具调用，不链接到 PhotonBox 二进制，不影响 PhotonBox 的 Apache-2.0 许可证",
+      "libbpf 为 LGPL-2.1，动态链接，不影响 PhotonBox 的 Apache-2.0 许可证",
+      "所有直接依赖的许可证均与 Apache-2.0 兼容"
+    ]
+  },
+  "externalReferences": [
+    {
+      "type": "build-system",
+      "url": "https://cmake.org/"
+    },
+    {
+      "type": "distribution",
+      "url": "https://github.com/SandboxDev2026/photon_kernel_sil3/releases"
+    },
+    {
+      "type": "issue-tracker",
+      "url": "https://github.com/SandboxDev2026/photon_kernel_sil3/issues"
+    },
+    {
+      "type": "vcs",
+      "url": "https://github.com/SandboxDev2026/photon_kernel_sil3"
+    }
+  ]
+}
