@@ -879,25 +879,38 @@ class RedBlueAdversaryTrainer:
             生成的攻击用例及 RAG 上下文
         """
         if not hasattr(self, '_rag_engine') or self._rag_engine is None:
-            # 没有 RAG 引擎时，回退到传统生成
             return self._fallback_attack_generation(target_sandbox_type)
 
-        # 1. 检索相关 CVE
+        kb_names = self._select_attack_kbs(use_cve_kb, use_evasion_kb)
+        if not kb_names:
+            return self._fallback_attack_generation(target_sandbox_type)
+
+        # 检索相关 CVE 和逃逸技术
+        query = f"{target_sandbox_type} escape vulnerability exploit"
+        rag_context = self._rag_engine.retrieve(query, kb_names=kb_names, top_k=5)
+
+        # 提取相关 CVE 并生成攻击用例
+        relevant_cves = self._extract_relevant_cves(rag_context)
+        attack_case, base_cve = self._generate_attack_from_base_cve(
+            relevant_cves, target_sandbox_type
+        )
+
+        # 记录统计
+        self._rag_attack_cases_count = getattr(self, '_rag_attack_cases_count', 0) + 1
+
+        return self._build_attack_result(attack_case, rag_context, relevant_cves, base_cve)
+
+    def _select_attack_kbs(self, use_cve_kb: bool, use_evasion_kb: bool) -> List[str]:
+        """选择要检索的知识库（CVE/逃逸技术）"""
         kb_names = []
         if use_cve_kb:
             kb_names.append("cve_knowledge")
         if use_evasion_kb:
             kb_names.append("attack_pattern_knowledge")
+        return kb_names
 
-        if not kb_names:
-            return self._fallback_attack_generation(target_sandbox_type)
-
-        query = f"{target_sandbox_type} escape vulnerability exploit"
-        rag_context = self._rag_engine.retrieve(
-            query, kb_names=kb_names, top_k=5,
-        )
-
-        # 2. 基于检索结果生成攻击用例
+    def _extract_relevant_cves(self, rag_context) -> List[Dict[str, Any]]:
+        """从 RAG 检索结果提取相关 CVE（仅 CVE 知识库来源）"""
         relevant_cves = []
         for result in rag_context.results:
             if result.source_kb == "cve_knowledge":
@@ -908,8 +921,11 @@ class RedBlueAdversaryTrainer:
                     "content": result.content[:200],
                     "score": result.score,
                 })
+        return relevant_cves
 
-        # 3. 选择最高相关性的 CVE 作为基础
+    def _generate_attack_from_base_cve(self, relevant_cves: List[Dict],
+                                        target_sandbox_type: str) -> tuple:
+        """基于最高相关性 CVE 变异生成攻击用例"""
         if relevant_cves:
             base_cve = max(relevant_cves, key=lambda x: x["score"])
             attack_case = AttackCase(
@@ -920,17 +936,18 @@ class RedBlueAdversaryTrainer:
                 target_component=target_sandbox_type,
                 difficulty=0.8 if base_cve["cvss"] >= 7.0 else 0.5,
             )
-        else:
-            attack_case = self._fallback_attack_generation(target_sandbox_type)["attack_case"]
+            return attack_case, base_cve
+        attack_case = self._fallback_attack_generation(target_sandbox_type)["attack_case"]
+        return attack_case, None
 
-        # 4. 记录 RAG 增强的攻击用例
-        self._rag_attack_cases_count = getattr(self, '_rag_attack_cases_count', 0) + 1
-
+    def _build_attack_result(self, attack_case, rag_context,
+                              relevant_cves: List[Dict], base_cve: Optional[Dict]) -> Dict[str, Any]:
+        """构建攻击用例生成结果"""
         return {
             "attack_case": attack_case,
             "rag_context": rag_context.to_dict(),
             "relevant_cves": relevant_cves,
-            "base_cve": base_cve if relevant_cves else None,
+            "base_cve": base_cve,
             "generation_method": "rag_enhanced" if relevant_cves else "fallback",
         }
 
