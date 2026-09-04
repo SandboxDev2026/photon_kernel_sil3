@@ -328,6 +328,131 @@ class TestDirection2DefenseRAG(unittest.TestCase):
         self.assertIn("rag_defense_rules_generated", stats)
         self.assertGreaterEqual(stats["rag_defense_rules_generated"], 1)
 
+    # ===== 子函数契约测试（函数拆分后补充）=====
+
+    def test_build_defense_query_with_attack_event(self):
+        """契约测试：_build_defense_query 带攻击事件应包含攻击类型和描述"""
+        event = {"attack_type": "container_escape", "description": "mount namespace escape"}
+        query = self.trainer._build_defense_query(event)
+        self.assertIn("container_escape", query)
+        self.assertIn("mount namespace escape", query)
+        self.assertIn("defense against", query)
+
+    def test_build_defense_query_without_attack_event(self):
+        """契约测试：_build_defense_query 无攻击事件应返回默认查询"""
+        query = self.trainer._build_defense_query(None)
+        self.assertEqual(query, "sandbox security defense rule best practice")
+
+    def test_build_defense_query_empty_attack_event(self):
+        """契约测试：_build_defense_query 空攻击事件(falsy)应返回默认查询"""
+        query = self.trainer._build_defense_query({})
+        self.assertEqual(query, "sandbox security defense rule best practice")
+
+    def test_build_defense_query_missing_keys(self):
+        """契约测试：_build_defense_query 缺少键应使用默认值不抛异常"""
+        query = self.trainer._build_defense_query({"unknown_key": "value"})
+        self.assertIsInstance(query, str)
+        self.assertTrue(len(query) > 0)
+
+    def test_select_defense_kbs_both(self):
+        """契约测试：_select_defense_kbs 两个标志都为真应返回两个知识库"""
+        kbs = self.trainer._select_defense_kbs(True, True)
+        self.assertEqual(len(kbs), 2)
+        self.assertIn("defense_knowledge", kbs)
+        self.assertIn("policy_knowledge", kbs)
+
+    def test_select_defense_kbs_only_defense(self):
+        """契约测试：_select_defense_kbs 仅防御知识库"""
+        kbs = self.trainer._select_defense_kbs(True, False)
+        self.assertEqual(kbs, ["defense_knowledge"])
+
+    def test_select_defense_kbs_only_policy(self):
+        """契约测试：_select_defense_kbs 仅策略知识库"""
+        kbs = self.trainer._select_defense_kbs(False, True)
+        self.assertEqual(kbs, ["policy_knowledge"])
+
+    def test_select_defense_kbs_none(self):
+        """契约测试：_select_defense_kbs 都为假应返回空列表"""
+        kbs = self.trainer._select_defense_kbs(False, False)
+        self.assertEqual(kbs, [])
+
+    def test_extract_relevant_rules_empty(self):
+        """契约测试：_extract_relevant_rules 空结果应返回空列表"""
+        class MockContext:
+            results = []
+        rules = self.trainer._extract_relevant_rules(MockContext())
+        self.assertEqual(rules, [])
+        self.assertIsInstance(rules, list)
+
+    def test_extract_relevant_rules_structure(self):
+        """契约测试：_extract_relevant_rules 提取的规则应包含必需字段"""
+        class MockResult:
+            def __init__(self):
+                self.doc_id = "rule_001"
+                self.metadata = {"rule_type": "network", "severity": "high"}
+                self.content = "block outbound traffic to internal network"
+                self.score = 0.95
+                self.source_kb = "defense_knowledge"
+        class MockContext:
+            results = [MockResult()]
+        rules = self.trainer._extract_relevant_rules(MockContext())
+        self.assertEqual(len(rules), 1)
+        rule = rules[0]
+        self.assertEqual(rule["rule_id"], "rule_001")
+        self.assertEqual(rule["rule_type"], "network")
+        self.assertEqual(rule["severity"], "high")
+        self.assertEqual(rule["score"], 0.95)
+        self.assertEqual(rule["source"], "defense_knowledge")
+        self.assertTrue(len(rule["content"]) <= 200)  # 内容截断到200字符
+
+    def test_generate_defense_from_base_empty(self):
+        """契约测试：_generate_defense_from_base 空规则应回退生成"""
+        defense_rule, base_rule = self.trainer._generate_defense_from_base([], None)
+        self.assertIsNotNone(defense_rule)
+        self.assertIsNone(base_rule)
+
+    def test_generate_defense_from_base_with_rules(self):
+        """契约测试：_generate_defense_from_base 有规则应选最高分作为基础"""
+        rules = [
+            {"rule_id": "low", "score": 0.3, "content": "low relevance rule"},
+            {"rule_id": "high", "score": 0.9, "content": "high relevance rule content"},
+        ]
+        defense_rule, base_rule = self.trainer._generate_defense_from_base(rules, None)
+        self.assertIsNotNone(defense_rule)
+        self.assertEqual(base_rule["rule_id"], "high")
+        self.assertIn("rag_evolved_", defense_rule.rule_id)
+
+    def test_build_defense_result_structure(self):
+        """契约测试：_build_defense_result 返回结构应包含所有必需字段"""
+        class MockDefenseRule:
+            rule_id = "test_rule"
+        class MockContext:
+            def to_dict(self):
+                return {"query": "test"}
+        result = self.trainer._build_defense_result(
+            MockDefenseRule(), MockContext(),
+            [{"rule_id": "r1"}], {"rule_id": "r1"}
+        )
+        self.assertIn("defense_rule", result)
+        self.assertIn("rag_context", result)
+        self.assertIn("relevant_rules", result)
+        self.assertIn("base_rule", result)
+        self.assertIn("generation_method", result)
+        self.assertEqual(result["generation_method"], "rag_enhanced")
+
+    def test_build_defense_result_fallback_method(self):
+        """契约测试：_build_defense_result 无相关规则时 generation_method 应为 fallback"""
+        class MockDefenseRule:
+            rule_id = "fallback_rule"
+        class MockContext:
+            def to_dict(self):
+                return {}
+        result = self.trainer._build_defense_result(
+            MockDefenseRule(), MockContext(), [], None
+        )
+        self.assertEqual(result["generation_method"], "fallback")
+        self.assertIsNone(result["base_rule"])
+
 
 class TestDirection3EventCorrelationRAG(unittest.TestCase):
     """方向3：事件关联 RAG 测试"""
