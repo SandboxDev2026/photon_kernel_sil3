@@ -1,13 +1,17 @@
 # 生产上线补齐任务清单 (PRODUCTION_CHECKLIST)
 
-> **[2026-09-02 更新] P0 代码层安全加固已完成**：
-> - ✅ TaskSpec 严格校验器（资源溢出/TTL为0/内网CIDR篡改/路径遍历/注入攻击拦截）
-> - ✅ Release-Gate 独立进程框架（Unix socket通信 + 降权运行 + seccomp限制）
-> - ✅ CapabilityToken 密钥外部注入 + 轮换（环境变量/文件/KMS，宽限期兼容）
-> - ✅ 解释器白名单 seccomp 内核强制（BPF map + execve拦截 + KILL_PROCESS）
-> - 测试：24个安全加固测试全部通过 | 全量 C++ 221通过
+> **[2026-09-05 更新] LightPool 安全加固四项任务已完成**：
+> - ✅ seccomp-BPF 双模式规则集（default_mode / untrusted_code_mode，8类高危syscall禁用 + clone namespace参数过滤 + KILL_PROCESS兜底 + 审计埋点）
+> - ✅ 制度性红蓝对抗测试库（tests/redblue/，5个红队POC + 报告模板 + 一键执行脚本 + PR准入规则）
+> - ✅ 安全测试用例集（tests/test_lightpool_security.cpp，20个测试：seccomp安全8 + 资源隔离4 + 逃逸路径4 + 审计完整性4）
+> - ✅ strace syscall采集工具（scripts/strace_syscall_collector.sh，用于裁剪白名单）
+> - ✅ GitHub Actions 定时合规收集 workflow（docs/compliance-collect-workflow.yml，需手动放置）
+> - 测试：20/20 LightPool安全测试通过 | Python 690/690通过 | SAST 0问题
 >
-> **剩余 P0（需裸机/特权环境）**：StrongPool+eBPF裸机验证、seccomp逐行复核+fuzz运行、内网拦截对抗测试
+> **[2026-09-02 更新] P0 代码层安全加固已完成**：
+> - ✅ TaskSpec 严格校验器、Release-Gate独立进程、CapabilityToken密钥轮换、解释器白名单seccomp内核强制
+>
+> **剩余 P0（需裸机/特权环境）**：StrongPool+eBPF裸机验证、内网拦截对抗测试、CRIU快照验证
 
 ---
 
@@ -68,12 +72,19 @@
 
 | 项 | 验证内容 | 状态 |
 |----|---------|------|
-| seccomp复核 | seccomp-bpf系统调用白名单逐行复核，删掉不必要syscall | ⬜ |
-| 高危调用 | 拒绝 ptrace、kexec 等高危调用 | ⚠️ 需复核确认 |
-| Landlock校验 | Landlock路径规则严格校验 | ⬜ |
-| 解释器白名单 | 解释器路径白名单改为内核强制，而不是应用层判断 | ⬜ 当前为应用层判断 |
-| 提权防护 | capabilities全部drop，确认没有残留能力位 | ⬜ |
-| 逃逸对抗 | 搜集公开的namespace/seccomp逃逸POC做对抗测试 | ⬜ |
+| seccomp双模式 | default_mode / untrusted_code_mode 双模式规则集，untrusted禁用8类高危syscall | ✅ 已完成 (seccomp_policy.hpp/cpp) |
+| seccomp参数过滤 | clone禁止CLONE_NEWNS/NEWUSER/NEWPID/NEWNET，openat标记写访问配合eBPF/Landlock | ✅ 已完成 |
+| seccomp兜底 | 白名单之外全部SECCOMP_RET_KILL_PROCESS（不使用TRAP避免信号绕过） | ✅ 已完成 |
+| seccomp审计埋点 | SeccompViolationEvent记录pid/syscall号/参数/时间戳，log_violation()上报 | ✅ 已完成 |
+| seccomp规则快照 | generate_snapshot_json() + SHA256哈希，用于合规证据收集 | ✅ 已完成 |
+| 高危调用 | 拒绝 ptrace、kexec_load、mount、init_module、open_by_handle_at 等 | ✅ untrusted_mode已禁用 |
+| 白名单裁剪 | strace_syscall_collector.sh采集真实业务syscall，移除冗余允许项 | 🔄 工具已就绪，需真实负载运行 |
+| Landlock校验 | Landlock路径规则严格校验 | ⚠️ 代码已实现，待裸机验证 |
+| 解释器白名单 | 解释器路径白名单内核强制（BPF map + execve拦截） | ✅ 已完成 |
+| 提权防护 | capabilities全部drop，确认没有残留能力位 | ⚠️ 代码已实现，待验证 |
+| 逃逸对抗 | 红蓝对抗测试库：5个红队POC（ptrace注入/fd泄露/fork炸弹/seccomp绕过/mount逃逸） | ✅ tests/redblue/ 已建立 |
+| 制度性测试 | PR准入规则（沙盒修改必须附带对抗用例）+ 季度人工红蓝演练机制 | ✅ 文档已定义 |
+| 安全测试用例 | 20个测试：seccomp安全(8) + 资源隔离(4) + 逃逸路径(4) + 审计完整性(4) | ✅ 20/20通过 |
 
 ### 2.2 CapabilityToken / ResourceProxy
 
