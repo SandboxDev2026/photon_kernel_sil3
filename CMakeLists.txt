@@ -141,6 +141,7 @@ set(SANDBOX_SOURCES
   src/sandbox/resource_proxy.cpp
   src/sandbox/risk_scorer.cpp
   src/sandbox/namespace_isolation.cpp
+  src/sandbox/seccomp_policy.cpp
   agent/message_bus.cpp
   agent/environment.cpp
   agent/agent_base.cpp
@@ -379,4 +380,10 @@ if(BUILD_TESTING)
   add_executable(test_runtime_guard tests/test_runtime_guard.cpp)
   target_link_libraries(test_runtime_guard photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads)
   add_test(NAME test_runtime_guard COMMAND test_runtime_guard)
+
+  # LightPool 安全测试（seccomp/资源隔离/逃逸路径/审计完整性）
+  add_executable(test_lightpool_security tests/test_lightpool_security.cpp)
+  target_include_directories(test_lightpool_security PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_lightpool_security photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+  add_test(NAME test_lightpool_security COMMAND test_lightpool_security)
 endif()
