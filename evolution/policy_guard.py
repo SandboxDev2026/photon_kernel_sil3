@@ -276,30 +276,43 @@ class PolicyGuard:
                         conversation_history: Optional[List[Dict]] = None,
                         agent_role: Optional[str] = None) -> ValidationResult:
         """
-        工具调用前置校验
+        工具调用前置校验（编排5个校验步骤）
 
-        校验流程：
-        1. 对话级注入检测（如果提供对话历史）
-        2. 策略规则匹配（按优先级）
-        3. 参数安全校验
-        4. RAG策略检索（相似场景）
-        5. 综合判定
-
-        Args:
-            agent_id: Agent ID
-            tool_name: 工具名
-            params: 工具参数
-            conversation_history: 对话历史（可选）
-            agent_role: Agent角色（可选）
-
-        Returns:
-            校验结果
+        校验流程：注入检测 → 规则匹配 → RAG检索 → 风险覆盖 → 结果构建
         """
         self._stats["total_checks"] += 1
+
+        # 1. 注入检测（对话+参数）
+        suspicious_patterns, risk_score = self._detect_injections(conversation_history, params)
+
+        # 2. 策略规则匹配
+        matched_rules, final_action, deny_reason = self._match_policy_rules(
+            tool_name, params, agent_role,
+        )
+
+        # 3. RAG策略检索（相似场景，结果用于上下文增强）
+        self._policy_kb.search(
+            query=f"{tool_name} {' '.join(str(v) for v in params.values())}",
+            top_k=3,
+        )
+
+        # 4. 风险覆盖判定
+        final_action, deny_reason = self._apply_risk_override(
+            risk_score, final_action, deny_reason, suspicious_patterns,
+        )
+
+        # 5. 构建结果
+        return self._build_validation_result(
+            final_action, deny_reason, matched_rules, risk_score,
+            suspicious_patterns, agent_id, tool_name, params,
+        )
+
+    def _detect_injections(self, conversation_history, params):
+        """步骤1: 对话级+参数级注入检测"""
         suspicious_patterns = []
         risk_score = 0.0
 
-        # 1. 对话级注入检测
+        # 对话级注入检测
         if conversation_history:
             conv_result = self._injection_detector.detect_conversation(conversation_history)
             if conv_result["is_injection"]:
@@ -307,7 +320,7 @@ class PolicyGuard:
                 suspicious_patterns.extend(conv_result.get("cross_message_patterns", []))
                 risk_score = max(risk_score, conv_result["overall_risk_score"])
 
-        # 2. 参数注入检测
+        # 参数级注入检测
         for param_value in params.values():
             if isinstance(param_value, str):
                 p_result = self._injection_detector.detect(param_value, "tool_output")
@@ -315,7 +328,10 @@ class PolicyGuard:
                     suspicious_patterns.extend(p_result["patterns"])
                     risk_score = max(risk_score, p_result["risk_score"])
 
-        # 3. 策略规则匹配
+        return suspicious_patterns, risk_score
+
+    def _match_policy_rules(self, tool_name, params, agent_role):
+        """步骤2: 策略规则匹配（按优先级）"""
         matched_rules = []
         final_action = PolicyAction.ALLOW
         deny_reason = ""
@@ -325,75 +341,77 @@ class PolicyGuard:
                 continue
             if self._rule_matches(rule, tool_name, params, agent_role):
                 matched_rules.append(rule.rule_id)
-                if rule.action == PolicyAction.DENY:
-                    final_action = PolicyAction.DENY
-                    deny_reason = f"规则 {rule.rule_id} 拒绝: {rule.description}"
+                final_action, deny_reason = self._apply_rule_action(
+                    rule, final_action, deny_reason,
+                )
+                if final_action == PolicyAction.DENY:
                     break
-                elif rule.action == PolicyAction.REQUIRE_APPROVAL:
-                    if final_action != PolicyAction.DENY:
-                        final_action = PolicyAction.REQUIRE_APPROVAL
-                        deny_reason = f"规则 {rule.rule_id} 需要审批: {rule.description}"
-                elif rule.action == PolicyAction.LOG_ONLY:
-                    pass  # 仅记录，不阻止
 
-        # 4. RAG策略检索（相似场景）
-        similar_policies = self._policy_kb.search(
-            query=f"{tool_name} {' '.join(str(v) for v in params.values())}",
-            top_k=3,
-        )
+        return matched_rules, final_action, deny_reason
 
-        # 5. 综合判定
+    def _apply_rule_action(self, rule, current_action, current_reason):
+        """应用单条规则的动作"""
+        if rule.action == PolicyAction.DENY:
+            return PolicyAction.DENY, f"规则 {rule.rule_id} 拒绝: {rule.description}"
+        elif rule.action == PolicyAction.REQUIRE_APPROVAL:
+            if current_action != PolicyAction.DENY:
+                return PolicyAction.REQUIRE_APPROVAL, f"规则 {rule.rule_id} 需要审批: {rule.description}"
+        return current_action, current_reason
+
+    def _apply_risk_override(self, risk_score, current_action, current_reason, suspicious_patterns):
+        """步骤4: 风险覆盖判定（高风险直接拒绝，中风险需审批）"""
         if risk_score > 0.7:
-            final_action = PolicyAction.DENY
-            deny_reason = f"检测到提示注入风险({risk_score:.2f})，模式: {', '.join(suspicious_patterns[:3])}"
-        elif risk_score > 0.4 and final_action == PolicyAction.ALLOW:
-            final_action = PolicyAction.REQUIRE_APPROVAL
-            deny_reason = f"检测到可疑内容(风险{risk_score:.2f})，需要人工审批"
+            return PolicyAction.DENY, f"检测到提示注入风险({risk_score:.2f})，模式: {', '.join(suspicious_patterns[:3])}"
+        elif risk_score > 0.4 and current_action == PolicyAction.ALLOW:
+            return PolicyAction.REQUIRE_APPROVAL, f"检测到可疑内容(风险{risk_score:.2f})，需要人工审批"
+        return current_action, current_reason
 
-        # 构建结果
+    def _build_validation_result(self, final_action, deny_reason, matched_rules,
+                                  risk_score, suspicious_patterns, agent_id,
+                                  tool_name, params):
+        """步骤5: 构建校验结果"""
         if final_action == PolicyAction.DENY:
             self._stats["denied"] += 1
-            return ValidationResult(
-                code=ValidationResultCode.DENIED,
-                allowed=False,
-                reason=deny_reason,
-                matched_rules=matched_rules,
-                risk_score=risk_score,
-                suspicious_patterns=suspicious_patterns,
-            )
+            return self._build_denial_result(deny_reason, matched_rules, risk_score, suspicious_patterns)
         elif final_action == PolicyAction.REQUIRE_APPROVAL:
             self._stats["needs_approval"] += 1
-            approval_id = f"approval_{int(time.time())}_{len(self._approval_queue)}"
-            self._approval_queue.append({
-                "approval_id": approval_id,
-                "agent_id": agent_id,
-                "tool_name": tool_name,
-                "params": params,
-                "reason": deny_reason,
-                "risk_score": risk_score,
-                "timestamp": time.time(),
-                "status": "pending",
-            })
-            return ValidationResult(
-                code=ValidationResultCode.NEEDS_APPROVAL,
-                allowed=False,
-                reason=deny_reason,
-                matched_rules=matched_rules,
-                risk_score=risk_score,
-                requires_approval=True,
-                approval_reason=deny_reason,
-                suspicious_patterns=suspicious_patterns,
-            )
+            return self._build_approval_result(deny_reason, matched_rules, risk_score,
+                                                suspicious_patterns, agent_id, tool_name, params)
         else:
             self._stats["allowed"] += 1
-            return ValidationResult(
-                code=ValidationResultCode.ALLOWED,
-                allowed=True,
-                reason="",
-                matched_rules=matched_rules,
-                risk_score=risk_score,
-                suspicious_patterns=suspicious_patterns,
-            )
+            return self._build_allow_result(matched_rules, risk_score, suspicious_patterns)
+
+    def _build_denial_result(self, reason, matched_rules, risk_score, suspicious_patterns):
+        """构建拒绝结果"""
+        return ValidationResult(
+            code=ValidationResultCode.DENIED, allowed=False, reason=reason,
+            matched_rules=matched_rules, risk_score=risk_score,
+            suspicious_patterns=suspicious_patterns,
+        )
+
+    def _build_approval_result(self, reason, matched_rules, risk_score,
+                                suspicious_patterns, agent_id, tool_name, params):
+        """构建需审批结果（创建审批条目）"""
+        approval_id = f"approval_{int(time.time())}_{len(self._approval_queue)}"
+        self._approval_queue.append({
+            "approval_id": approval_id, "agent_id": agent_id,
+            "tool_name": tool_name, "params": params, "reason": reason,
+            "risk_score": risk_score, "timestamp": time.time(), "status": "pending",
+        })
+        return ValidationResult(
+            code=ValidationResultCode.NEEDS_APPROVAL, allowed=False, reason=reason,
+            matched_rules=matched_rules, risk_score=risk_score,
+            requires_approval=True, approval_reason=reason,
+            suspicious_patterns=suspicious_patterns,
+        )
+
+    def _build_allow_result(self, matched_rules, risk_score, suspicious_patterns):
+        """构建允许结果"""
+        return ValidationResult(
+            code=ValidationResultCode.ALLOWED, allowed=True, reason="",
+            matched_rules=matched_rules, risk_score=risk_score,
+            suspicious_patterns=suspicious_patterns,
+        )
 
     # ---- 审批管理 ----
 
