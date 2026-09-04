@@ -276,54 +276,51 @@ class AdversaryLoopOrchestrator:
         if not self._trainer or not self._executor:
             return
 
-        # 获取蓝方防御规则
-        new_rules = []
-        for rule in self._trainer.blue_agent.defense_rules:
-            # 跳过已部署的规则
-            if rule.rule_id in self._deployed_rule_ids:
-                continue
-            # 跳过有效性低于阈值的规则
-            if rule.effectiveness < self.config.min_rule_effectiveness:
-                continue
-            new_rules.append(rule)
-
-        # 限制每轮部署数量
-        new_rules = new_rules[:self.config.max_deploy_per_round]
-
+        new_rules = self._collect_deployable_rules()
         if not new_rules:
             return
 
-        # 为每条规则生成配置更新并部署
-        deployed = 0
         for rule in new_rules:
-            try:
-                updates = self._executor.enforcer.generate_updates_from_rule(rule)
-                if not updates:
-                    continue
-
-                results = self._executor.execute_updates(updates)
-                success_count = sum(
-                    1 for r in results if r.status == ExecutionStatus.SUCCESS
-                )
-
-                if success_count > 0:
-                    self._deployed_rule_ids.add(rule.rule_id)
-                    deployed += 1
-                    self._stats.total_rules_deployed += 1
-                    self._stats.last_deploy_time = time.time()
-
-                    if self.config.on_new_rule_deployed:
-                        self.config.on_new_rule_deployed(rule, results)
-                else:
-                    self._stats.total_deploy_failures += 1
-
-            except Exception as e:
-                self._stats.total_deploy_failures += 1
-                self._stats.errors += 1
-                if self.config.on_error:
-                    self.config.on_error(e)
+            self._deploy_single_rule(rule)
 
         self._stats.total_rules_generated += len(new_rules)
+
+    def _collect_deployable_rules(self) -> List:
+        """收集可部署的新规则：跳过已部署、有效性低于阈值，限制每轮数量"""
+        new_rules = []
+        for rule in self._trainer.blue_agent.defense_rules:
+            if rule.rule_id in self._deployed_rule_ids:
+                continue
+            if rule.effectiveness < self.config.min_rule_effectiveness:
+                continue
+            new_rules.append(rule)
+        return new_rules[:self.config.max_deploy_per_round]
+
+    def _deploy_single_rule(self, rule) -> None:
+        """部署单条规则：生成更新、执行、统计、回调"""
+        try:
+            updates = self._executor.enforcer.generate_updates_from_rule(rule)
+            if not updates:
+                return
+
+            results = self._executor.execute_updates(updates)
+            success_count = sum(
+                1 for r in results if r.status == ExecutionStatus.SUCCESS
+            )
+
+            if success_count > 0:
+                self._deployed_rule_ids.add(rule.rule_id)
+                self._stats.total_rules_deployed += 1
+                self._stats.last_deploy_time = time.time()
+                if self.config.on_new_rule_deployed:
+                    self.config.on_new_rule_deployed(rule, results)
+            else:
+                self._stats.total_deploy_failures += 1
+        except Exception as e:
+            self._stats.total_deploy_failures += 1
+            self._stats.errors += 1
+            if self.config.on_error:
+                self.config.on_error(e)
 
     def _timed_training_loop(self) -> None:
         """定时推演循环"""
