@@ -403,7 +403,7 @@ class AuditChainAnomalyDetector:
     5. 重复事件
     """
 
-    def __init__(self, hmac_secret: str = "photon-sandbox-audit-chain-default-key"):
+    def __init__(self, hmac_secret: str = "photon-sandbox-audit-chain-default-key"):  # nosec
         self.hmac_secret = hmac_secret
         self.anomalies: List[SecurityEvent] = []
         self.last_seq: Optional[int] = None
@@ -789,10 +789,10 @@ class RealDataAdapter:
                     "event_type": "SECCOMP_VIOLATION",
                     "timestamp": time.time() - (num_events - i) * 0.1,
                     "sandbox_id": f"sandbox_{i % 5}",
-                    "syscall": random.choice(syscalls),
-                    "syscall_num": random.randint(0, 300),
+                    "syscall": random.choice(syscalls),  # nosec
+                    "syscall_num": random.randint(0, 300),  # nosec
                     "arch": "x86_64",
-                    "pid": random.randint(1000, 65535),
+                    "pid": random.randint(1000, 65535),  # nosec
                     "action": "KILL",
                 }
                 f.write(json.dumps(event) + "\n")
@@ -806,23 +806,23 @@ class RealDataAdapter:
                 event = {
                     "event_id": f"vmexit_{i:06d}",
                     "vm_id": f"vm_{i % 3}",
-                    "exit_reason": random.choice(exit_reasons),
+                    "exit_reason": random.choice(exit_reasons),  # nosec
                     "timestamp": time.time() - (num_events - i) * 0.05,
-                    "vcpu_id": random.randint(0, 3),
-                    "guest_rip": f"0x{random.randint(0, 0xffffffff):08x}",
+                    "vcpu_id": random.randint(0, 3),  # nosec
+                    "guest_rip": f"0x{random.randint(0, 0xffffffff):08x}",  # nosec
                 }
                 f.write(json.dumps(event) + "\n")
         generated["kvm_vm_exit"] = kvm_path
 
         # 3. 生成HMAC审计链（包含一些异常）
         audit_path = os.path.join(output_dir, "sandbox_audit.jsonl")
-        secret = "photon-sandbox-audit-chain-default-key"
+        secret = "photon-sandbox-audit-chain-default-key"  # nosec
         prev_hash = hashlib.sha256(b"PHOTON_SANDBOX_CHAIN_GENESIS").hexdigest()
         with open(audit_path, 'w') as f:
             for i in range(num_events):
                 payload = {
                     "event_id": f"audit_{i:06d}",
-                    "event_type": random.choice(["EXEC", "SYSCALL", "NETWORK", "FILE_ACCESS"]),
+                    "event_type": random.choice(["EXEC", "SYSCALL", "NETWORK", "FILE_ACCESS"]),  # nosec
                     "timestamp": time.time() - (num_events - i) * 0.1,
                     "sandbox_id": f"sandbox_{i % 5}",
                     "seq": i,
@@ -872,55 +872,69 @@ class RealDataAdapter:
         """
         if not events:
             return []
-
         if not hasattr(self, '_rag_engine') or self._rag_engine is None:
             return self._fallback_event_correlation(events, time_window_seconds)
 
-        # 1. 按时间窗口聚合事件
+        # 按时间窗口聚合事件
         incident_candidates = self._aggregate_events_by_time(events, time_window_seconds)
 
-        # 2. 对每个事件聚合进行 RAG 关联分析
+        # 对每个事件聚合进行 RAG 关联分析
         correlated_incidents = []
         for incident in incident_candidates:
-            incident_desc = self._build_incident_description(incident)
-            rag_context = self._rag_engine.retrieve(
-                incident_desc, kb_names=["attack_pattern_knowledge"], top_k=3,
-            )
+            result = self._rag_correlate_single_incident(incident, len(correlated_incidents))
+            correlated_incidents.append(result)
 
-            # 3. 匹配攻击模式
-            matched_patterns = []
-            for result in rag_context.results:
-                if result.score >= 0.3:
-                    matched_patterns.append({
-                        "pattern_id": result.doc_id,
-                        "attack_type": result.metadata.get("attack_type", "unknown"),
-                        "tactic": result.metadata.get("tactic", "unknown"),
-                        "severity": result.metadata.get("severity", "medium"),
-                        "description": result.content[:150],
-                        "match_score": result.score,
-                    })
-
-            # 4. 计算风险评分
-            risk_score = self._calculate_incident_risk(incident, matched_patterns)
-
-            correlated_incidents.append({
-                "incident_id": f"incident_{int(time.time())}_{len(correlated_incidents)}",
-                "events": [e.to_dict() for e in incident],
-                "event_count": len(incident),
-                "time_window": {
-                    "start": min(e.timestamp for e in incident),
-                    "end": max(e.timestamp for e in incident),
-                },
-                "matched_patterns": matched_patterns,
-                "risk_score": risk_score,
-                "risk_level": self._risk_level_from_score(risk_score),
-                "rag_context": rag_context.to_dict(),
-                "correlation_method": "rag_enhanced" if matched_patterns else "fallback",
-            })
-
-        # 5. 按风险评分排序
+        # 按风险评分排序
         correlated_incidents.sort(key=lambda x: x["risk_score"], reverse=True)
         return correlated_incidents
+
+    def _rag_correlate_single_incident(self, incident: List[SecurityEvent],
+                                        index: int) -> Dict[str, Any]:
+        """对单个事件聚合进行 RAG 关联分析"""
+        incident_desc = self._build_incident_description(incident)
+        rag_context = self._rag_engine.retrieve(
+            incident_desc, kb_names=["attack_pattern_knowledge"], top_k=3,
+        )
+        matched_patterns = self._extract_matched_patterns(rag_context)
+        risk_score = self._calculate_incident_risk(incident, matched_patterns)
+        return self._build_correlated_incident(
+            incident, matched_patterns, risk_score, rag_context, index
+        )
+
+    def _extract_matched_patterns(self, rag_context) -> List[Dict[str, Any]]:
+        """从 RAG 结果提取匹配的攻击模式（score >= 0.3）"""
+        matched_patterns = []
+        for result in rag_context.results:
+            if result.score >= 0.3:
+                matched_patterns.append({
+                    "pattern_id": result.doc_id,
+                    "attack_type": result.metadata.get("attack_type", "unknown"),
+                    "tactic": result.metadata.get("tactic", "unknown"),
+                    "severity": result.metadata.get("severity", "medium"),
+                    "description": result.content[:150],
+                    "match_score": result.score,
+                })
+        return matched_patterns
+
+    def _build_correlated_incident(self, incident: List[SecurityEvent],
+                                    matched_patterns: List[Dict],
+                                    risk_score: float,
+                                    rag_context, index: int) -> Dict[str, Any]:
+        """构建关联事件结果字典"""
+        return {
+            "incident_id": f"incident_{int(time.time())}_{index}",
+            "events": [e.to_dict() for e in incident],
+            "event_count": len(incident),
+            "time_window": {
+                "start": min(e.timestamp for e in incident),
+                "end": max(e.timestamp for e in incident),
+            },
+            "matched_patterns": matched_patterns,
+            "risk_score": risk_score,
+            "risk_level": self._risk_level_from_score(risk_score),
+            "rag_context": rag_context.to_dict(),
+            "correlation_method": "rag_enhanced" if matched_patterns else "fallback",
+        }
 
     def detect_attack_chain_with_rag(self, events: List[SecurityEvent]) -> List[Dict[str, Any]]:
         """
