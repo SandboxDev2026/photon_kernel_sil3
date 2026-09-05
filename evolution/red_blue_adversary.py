@@ -953,72 +953,106 @@ class RedBlueAdversaryTrainer:
         Returns:
             训练结果统计
         """
-        training_results = []
-        total_events_consumed = 0
         start_time = time.time()
+        initial_event_count = self._setup_real_signal_training(consumer)
 
-        # 连接消费器回调（如果尚未连接）
-        if not hasattr(self, '_real_signal_consumer') or self._real_signal_consumer is None:
-            self.connect_real_signal_consumer(consumer)
-
-        # 记录训练开始时已有的事件数
-        initial_event_count = len(self.real_event_history)
+        # 实时模式必须提供文件路径
+        if realtime and file_path is None:
+            return {"error": "实时模式需要提供 file_path"}
 
         if realtime:
-            # 实时模式：启动 REALTIME 监听，每积累 N 个事件触发一轮训练
-            if file_path is None:
-                return {"error": "实时模式需要提供 file_path"}
-
-            consumer.start_realtime_consuming(
-                file_path,
-                signal_type=signal_type,
-                poll_interval=0.2,
-                from_beginning=True,
+            training_results, total_events_consumed = self._run_realtime_training(
+                consumer, file_path, signal_type, num_rounds,
+                events_per_round, realtime_timeout_seconds, start_time
+            )
+        else:
+            training_results, total_events_consumed = self._run_batch_training(
+                consumer, file_path, signal_type, num_rounds
             )
 
-            try:
-                for round_idx in range(num_rounds):
-                    # 等待积累足够事件或超时
-                    round_start_count = len(self.real_event_history)
-                    wait_start = time.time()
+        return self._build_training_result(
+            training_results, num_rounds, total_events_consumed,
+            initial_event_count, realtime, start_time
+        )
 
-                    while (len(self.real_event_history) - round_start_count < events_per_round):
-                        if time.time() - wait_start > realtime_timeout_seconds:
-                            break
-                        if time.time() - start_time > realtime_timeout_seconds * num_rounds:
-                            break
-                        time.sleep(0.1)
+    def _setup_real_signal_training(self, consumer) -> int:
+        """初始化真实信号训练环境，返回训练开始时已有的事件数"""
+        if not hasattr(self, '_real_signal_consumer') or self._real_signal_consumer is None:
+            self.connect_real_signal_consumer(consumer)
+        return len(self.real_event_history)
 
-                    # 触发一轮训练
-                    round_result = self._train_round_from_real_events(round_idx)
-                    round_result["mode"] = "realtime"
-                    training_results.append(round_result)
-                    total_events_consumed += round_result.get("events_used", 0)
+    def _run_realtime_training(
+        self, consumer, file_path, signal_type,
+        num_rounds, events_per_round, timeout_seconds, start_time
+    ) -> tuple:
+        """实时模式训练循环：启动REALTIME监听，每积累N个事件触发一轮训练"""
+        if file_path is None:
+            return [], 0
 
-                    # 检查全局超时
-                    if time.time() - start_time > realtime_timeout_seconds * num_rounds:
-                        break
-            finally:
-                consumer.stop_realtime_consuming(timeout=3)
+        consumer.start_realtime_consuming(
+            file_path, signal_type=signal_type,
+            poll_interval=0.2, from_beginning=True,
+        )
 
-        else:
-            # 批量模式：从文件消费事件，然后执行训练轮次
-            if file_path and os.path.exists(file_path):
-                consumed = consumer.consume_file(file_path, signal_type=signal_type)
-                total_events_consumed += consumed
+        training_results = []
+        total_events_consumed = 0
+        global_timeout = timeout_seconds * num_rounds
 
-            # 执行训练轮次（每轮基于最近的 events_per_round 个事件）
+        try:
             for round_idx in range(num_rounds):
+                round_start_count = len(self.real_event_history)
+                wait_start = time.time()
+
+                # 等待积累足够事件或超时
+                while (len(self.real_event_history) - round_start_count < events_per_round):
+                    if time.time() - wait_start > timeout_seconds:
+                        break
+                    if time.time() - start_time > global_timeout:
+                        break
+                    time.sleep(0.1)
+
+                # 触发一轮训练
                 round_result = self._train_round_from_real_events(round_idx)
-                round_result["mode"] = "batch"
+                round_result["mode"] = "realtime"
                 training_results.append(round_result)
+                total_events_consumed += round_result.get("events_used", 0)
 
-        # 计算本轮训练新增的事件数
+                # 检查全局超时
+                if time.time() - start_time > global_timeout:
+                    break
+        finally:
+            consumer.stop_realtime_consuming(timeout=3)
+
+        return training_results, total_events_consumed
+
+    def _run_batch_training(
+        self, consumer, file_path, signal_type, num_rounds
+    ) -> tuple:
+        """批量模式训练循环：从文件消费事件，然后执行训练轮次"""
+        training_results = []
+        total_events_consumed = 0
+
+        if file_path and os.path.exists(file_path):
+            consumed = consumer.consume_file(file_path, signal_type=signal_type)
+            total_events_consumed += consumed
+
+        # 执行训练轮次（每轮基于最近的 events_per_round 个事件）
+        for round_idx in range(num_rounds):
+            round_result = self._train_round_from_real_events(round_idx)
+            round_result["mode"] = "batch"
+            training_results.append(round_result)
+
+        return training_results, total_events_consumed
+
+    def _build_training_result(
+        self, training_results, num_rounds_requested,
+        total_events_consumed, initial_event_count, realtime, start_time
+    ) -> Dict[str, Any]:
+        """构建训练结果统计字典"""
         new_events = len(self.real_event_history) - initial_event_count
-
         return {
             "num_rounds": len(training_results),
-            "num_rounds_requested": num_rounds,
+            "num_rounds_requested": num_rounds_requested,
             "total_events_consumed": total_events_consumed,
             "new_events_ingested": new_events,
             "total_attack_cases": len(self.red_agent.attack_cases),
@@ -1027,6 +1061,7 @@ class RedBlueAdversaryTrainer:
             "duration_seconds": round(time.time() - start_time, 3),
             "round_results": training_results,
         }
+
 
     def _train_round_from_real_events(self, round_idx: int) -> Dict[str, Any]:
         """
