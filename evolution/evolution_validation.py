@@ -162,15 +162,23 @@ class EvolutionDriftMonitor:
         return snapshot
 
     def _detect_anomalies(self, current: DriftSnapshot) -> None:
-        """检测漂移异常"""
+        """检测漂移异常（主入口）"""
         previous = self.snapshots[-2]
-
-        # 1. 计算红方权重变化率
         change_rate = self._compute_weight_change_rate(
             previous.red_weights, current.red_weights
         )
 
-        # 2. 停滞检测：变化率 < 阈值
+        # 1. 停滞检测
+        self._detect_stagnation(change_rate, current)
+
+        # 2. 突变检测
+        self._detect_spike(change_rate, previous, current)
+
+        # 3. 振荡检测
+        self._detect_oscillation(current)
+
+    def _detect_stagnation(self, change_rate: float, current: DriftSnapshot) -> None:
+        """停滞检测：变化率 < 阈值时告警，恢复时通知"""
         if change_rate < self.stagnation_threshold:
             self.consecutive_stagnation += 1
             if self.consecutive_stagnation >= self.stagnation_rounds:
@@ -205,7 +213,10 @@ class EvolutionDriftMonitor:
                 self.alerts.append(recovery_alert)
             self.consecutive_stagnation = 0
 
-        # 3. 突变检测：单轮变化率 > 阈值
+    def _detect_spike(
+        self, change_rate: float, previous: DriftSnapshot, current: DriftSnapshot
+    ) -> None:
+        """突变检测：单轮变化率 > 阈值时告警"""
         if change_rate > self.spike_threshold:
             alert = DriftAlert(
                 alert_type="spike",
@@ -223,40 +234,47 @@ class EvolutionDriftMonitor:
             )
             self.alerts.append(alert)
 
-        # 4. 振荡检测：权重在窗口内反复大幅变化
-        if len(self.snapshots) >= self.oscillation_window:
-            recent_changes = []
-            for i in range(-self.oscillation_window, -1):
-                if i + 1 < 0:
-                    c = self._compute_weight_change_rate(
-                        self.snapshots[i].red_weights,
-                        self.snapshots[i + 1].red_weights,
-                    )
-                    recent_changes.append(c)
+    def _detect_oscillation(self, current: DriftSnapshot) -> None:
+        """振荡检测：权重在窗口内反复大幅变化时告警"""
+        if len(self.snapshots) < self.oscillation_window:
+            return
 
-            if recent_changes and all(c > self.stagnation_threshold * 5 for c in recent_changes):
-                # 检查是否在振荡（变化方向交替）
-                directions = []
-                for i in range(-self.oscillation_window, -1):
-                    if i + 1 < 0:
-                        d = self._compute_weight_direction(
-                            self.snapshots[i].red_weights,
-                            self.snapshots[i + 1].red_weights,
-                        )
-                        directions.append(d)
+        # 计算最近窗口内的变化率
+        recent_changes = []
+        for i in range(-self.oscillation_window, -1):
+            if i + 1 < 0:
+                c = self._compute_weight_change_rate(
+                    self.snapshots[i].red_weights,
+                    self.snapshots[i + 1].red_weights,
+                )
+                recent_changes.append(c)
 
-                if len(directions) >= 3 and self._is_oscillating(directions):
-                    alert = DriftAlert(
-                        alert_type="oscillation",
-                        round_idx=current.round_idx,
-                        severity="warning",
-                        message=(
-                            f"🔄 进化振荡告警：最近 {self.oscillation_window} 轮权重反复大幅变化，"
-                            f"可能是进化不稳定或激励函数设计有问题。"
-                        ),
-                        details={"recent_changes": recent_changes},
-                    )
-                    self.alerts.append(alert)
+        if not recent_changes or not all(c > self.stagnation_threshold * 5 for c in recent_changes):
+            return
+
+        # 检查是否在振荡（变化方向交替）
+        directions = []
+        for i in range(-self.oscillation_window, -1):
+            if i + 1 < 0:
+                d = self._compute_weight_direction(
+                    self.snapshots[i].red_weights,
+                    self.snapshots[i + 1].red_weights,
+                )
+                directions.append(d)
+
+        if len(directions) >= 3 and self._is_oscillating(directions):
+            alert = DriftAlert(
+                alert_type="oscillation",
+                round_idx=current.round_idx,
+                severity="warning",
+                message=(
+                    f"🔄 进化振荡告警：最近 {self.oscillation_window} 轮权重反复大幅变化，"
+                    f"可能是进化不稳定或激励函数设计有问题。"
+                ),
+                details={"recent_changes": recent_changes},
+            )
+            self.alerts.append(alert)
+
 
     def _compute_weight_change_rate(
         self,
