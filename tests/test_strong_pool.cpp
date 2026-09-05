@@ -248,6 +248,51 @@ TEST(SecurityPolicyTest, NoSilentDowngradeForHighRisk) {
         printf("  Security verified: HIGH/CRITICAL never silently downgraded\n");
     }
 }
+
+// ==================== 嵌套虚拟化检测测试 ====================
+TEST(KvmDetectorTest, HypervisorBitDetection) {
+    // 检测 CPUID hypervisor 位（是否运行在虚拟机中）
+    bool in_vm = KvmDetector::detect_hypervisor_bit();
+    // 结果可以是 true 或 false，取决于运行环境
+    // 但函数必须能正常执行不崩溃
+    printf("  Hypervisor bit detected: %s\n", in_vm ? "YES (running in VM)" : "NO (bare metal)");
+    SUCCEED();
+}
+
+TEST(KvmDetectorTest, NestedVmDetection) {
+    // 嵌套虚拟化检测：在VM中 + 有vmx/svm + 有/dev/kvm
+    bool is_nested = KvmDetector::detect_nested_vm();
+    printf("  Nested VM detected: %s\n", is_nested ? "YES (debug only)" : "NO");
+    SUCCEED();
+}
+
+TEST(KvmDetectorTest, NestedVmProductionAcceptanceInvalid) {
+    // 核心安全验证：嵌套环境下 production_acceptance_valid 必须为 false
+    auto caps = KvmDetector::detect();
+    if (caps.is_nested_vm) {
+        EXPECT_FALSE(caps.production_acceptance_valid);
+        EXPECT_FALSE(caps.nested_warning.empty());
+        EXPECT_NE(caps.nested_warning.find("NOT valid for production"), std::string::npos);
+        printf("  Nested VM: production acceptance INVALID (correct)\n");
+        printf("  Warning: %s\n", caps.nested_warning.c_str());
+    } else {
+        printf("  Not nested VM: skipping production acceptance check\n");
+    }
+}
+
+TEST(KvmDetectorTest, CapabilitiesToStringIncludesNestedInfo) {
+    // to_string() 必须包含嵌套环境信息
+    auto caps = KvmDetector::detect();
+    std::string str = caps.to_string();
+    EXPECT_NE(str.find("nested_vm"), std::string::npos);
+    EXPECT_NE(str.find("production_acceptance"), std::string::npos);
+    if (caps.is_nested_vm) {
+        EXPECT_NE(str.find("DEBUG ONLY"), std::string::npos);
+        EXPECT_NE(str.find("INVALID"), std::string::npos);
+    }
+    printf("  to_string() includes nested VM info: OK\n");
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();
