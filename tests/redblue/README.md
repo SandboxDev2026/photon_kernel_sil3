@@ -22,6 +22,11 @@ tests/redblue/
 ├── redteam_poc_signal_race.cpp     # POC-008: 信号竞争条件逃逸
 ├── redteam_poc_proc_escape.cpp     # POC-009: /proc 接口突破限制
 ├── redteam_poc_memory_oom.cpp      # POC-010: 内存耗尽 OOM 拒绝服务
+├── redteam_poc_landlock_bypass.cpp  # POC-011: Landlock 路径遍历与符号链接绕过
+├── redteam_poc_cgroup_escape.cpp    # POC-012: cgroup 逃逸与资源限制绕过
+├── redteam_poc_namespace_escape.cpp # POC-013: 命名空间逃逸与 setns 攻击
+├── redteam_poc_kernel_info_leak.cpp # POC-014: 内核信息泄露与侦察
+├── redteam_poc_sidechannel.cpp      # POC-015: 侧信道攻击（缓存时序+Spectre）
 └── reports/                         # 对抗测试报告归档目录
     └── .gitkeep
 ```
@@ -40,6 +45,16 @@ tests/redblue/
 | POC-008 | 信号竞争 | SIGSYS/SIGSTOP 信号处理绕过 | KILL_PROCESS 无信号处理机会 | High |
 | POC-009 | /proc 突破 | /proc/self/mem、sysrq、kcore 等 | Landlock 限制敏感路径访问 | High |
 | POC-010 | 内存 OOM | malloc/mmap/COW/共享内存耗尽 | cgroup memory.max 限制生效 | High |
+| POC-011 | cgroup 绕过 | 尝试修改 cgroup 限制、释放资源限制 | cgroup 文件系统只读，修改被拒 | High |
+| POC-012 | namespace 逃逸 | 尝试突破 mount/pid/network/user namespace | namespace 隔离生效，无法访问宿主 | Critical |
+| POC-013 | Landlock 绕过 | 尝试通过文件描述符继承、/proc 绕过 Landlock | Landlock 规则生效，访问被拒 | High |
+| POC-014 | 内核信息泄露 | 读取 /proc/kallsyms、/boot/config、内核指针 | 内核指针被清零，敏感信息不可读 | Medium |
+| POC-015 | 侧信道攻击 | Spectre/Meltdown 推测执行漏洞利用 | 内核页表隔离(KPTI)、微码更新生效 | High |
+| POC-011 | Landlock绕过 | 路径遍历/符号链接/proc/self/fd | Landlock 限制所有路径访问 | High |
+| POC-012 | cgroup逃逸 | 写入cgroup.procs/创建子cgroup/tmpfs绕过 | cgroup文件系统只读，资源限制生效 | High |
+| POC-013 | 命名空间逃逸 | unshare user/setns/pivot_root | seccomp拦截，user namespace禁用 | Critical |
+| POC-014 | 内核信息泄露 | /proc/kallsyms/dmesg/kcore/iomem | 敏感路径不可访问 | Medium |
+| POC-015 | 侧信道攻击 | Flush+Reload/Spectre/高分辨率计时器 | 侧信道缓解已启用 | High |
 | POC-004 | seccomp 绕过 | 32 位兼容模式/syscall 混淆 | 全部被拦截，无绕过 | Critical |
 | POC-005 | mount 逃逸 | 尝试 mount procfs/sysfs 突破隔离 | mount 被 KILL | Critical |
 | POC-006 | 内存炸弹 | 大量 mmap 耗尽内存 | cgroup 内存限制触发 OOM | Medium |

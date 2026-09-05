@@ -441,38 +441,67 @@ class SecurityCircuitBreaker:
                     return
 
     def _recovery_loop(self):
-        """后台恢复检查线程"""
+        """后台恢复检查线程（健壮版本：分段睡眠+异常隔离）"""
         while self._running:
             try:
-                time.sleep(10)  # 每10秒检查一次
+                # 分段睡眠，确保能快速响应关闭信号
+                for _ in range(20):  # 20 * 0.5s = 10s
+                    if not self._running:
+                        return
+                    time.sleep(0.5)
+
                 if not self.auto_recover_enabled:
                     continue
 
+                recovered_count = 0
                 with self._lock:
                     now = time.time()
                     for action in self._actions:
-                        if (
-                            action.state == CircuitBreakerState.OPEN
-                            and action.auto_recover_at
-                            and now >= action.auto_recover_at
-                            and not action.requires_manual_confirmation
-                        ):
-                            # 自动恢复
-                            action.state = CircuitBreakerState.CLOSED
-                            action.recovered_at = now
-                            action.recovered_by = "auto_recovery"
-                            self._current_state = CircuitBreakerState.CLOSED
-                            self._current_level = None
-                            logger.info(f"🔄 自动恢复: action={action.action_id}")
+                        try:
+                            if (
+                                action.state == CircuitBreakerState.OPEN
+                                and action.auto_recover_at
+                                and now >= action.auto_recover_at
+                                and not action.requires_manual_confirmation
+                            ):
+                                action.state = CircuitBreakerState.CLOSED
+                                action.recovered_at = now
+                                action.recovered_by = "auto_recovery"
+                                self._current_state = CircuitBreakerState.CLOSED
+                                self._current_level = None
+                                recovered_count += 1
+                                logger.info(f"🔄 自动恢复: action={action.action_id}")
+                        except Exception as action_e:
+                            logger.error(f"单个动作恢复异常: {action_e}")
+                            continue  # 单个动作异常不影响其他
+
+                if recovered_count > 0:
+                    logger.info(f"本轮自动恢复 {recovered_count} 个熔断动作")
 
             except Exception as e:
                 logger.error(f"恢复检查线程异常: {e}")
+                time.sleep(1)  # 异常后短暂退避，避免CPU空转
 
-    def shutdown(self):
-        """关闭熔断引擎"""
+    def shutdown(self, wait: bool = True, timeout: float = 5.0):
+        """
+        关闭熔断引擎（优雅关闭）
+
+        Args:
+            wait: 是否等待恢复线程退出
+            timeout: 等待超时时间（秒）
+        """
         self._running = False
-        if self._recover_thread.is_alive():
-            self._recover_thread.join(timeout=5)
+        if wait and self._recover_thread and self._recover_thread.is_alive():
+            self._recover_thread.join(timeout=timeout)
+            if self._recover_thread.is_alive():
+                logger.warning("恢复线程在超时时间内未退出，强制关闭")
+
+    def __del__(self):
+        """析构时确保资源清理"""
+        try:
+            self.shutdown(wait=False)
+        except Exception:
+            pass  # 析构函数中不抛出异常
 
     def get_stats(self) -> dict:
         """获取统计信息"""

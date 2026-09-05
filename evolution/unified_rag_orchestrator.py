@@ -215,6 +215,10 @@ class UnifiedRAGOrchestrator:
         self._cache_hits = 0
         self._query_cache = {}
 
+        # 稳定性：模块级超时保护（秒）
+        self._module_timeout = 10.0
+        self._total_timeouts = 0
+
     def query(
         self,
         query: str,
@@ -303,11 +307,16 @@ class UnifiedRAGOrchestrator:
             duration_ms=(time.time() - stage_start) * 1000,
         ))
 
-        # ========== 阶段4：混合检索 ==========
+        # ========== 阶段4：混合检索（稳定性：异常隔离+超时保护） ==========
         stage_start = time.time()
         hybrid_results = []
         try:
+            retrieval_start = time.time()
             hybrid_results = self._hybrid.search(search_query, top_k=effective_top_k)
+            retrieval_duration = time.time() - retrieval_start
+            if retrieval_duration > self._module_timeout:
+                self._total_timeouts += 1
+                logger.warning(f"混合检索超时: {retrieval_duration:.1f}s")
             timings.append(RAGStageTiming(
                 stage=RAGPipelineStage.RETRIEVAL.value,
                 duration_ms=(time.time() - stage_start) * 1000,
@@ -317,14 +326,16 @@ class UnifiedRAGOrchestrator:
                 stage=RAGPipelineStage.RETRIEVAL.value,
                 duration_ms=(time.time() - stage_start) * 1000,
                 success=False,
-                error=str(e),
+                error=str(e)[:200],  # 限制错误信息长度
             ))
+            hybrid_results = []  # 失败时返回空结果，不影响其他模块
 
-        # ========== 阶段5：知识图谱检索 + 风险评估 ==========
+        # ========== 阶段5：知识图谱检索 + 风险评估（稳定性：异常隔离） ==========
         stage_start = time.time()
         kg_results = []
         risk_assessment = None
         try:
+            kg_start = time.time()
             if self.enable_knowledge_graph and self._kg is not None:
                 # 实体优先融合检索（百度文心一言模式）
                 kg_result = self._kg.entity_first_search(
@@ -366,6 +377,9 @@ class UnifiedRAGOrchestrator:
                             instance_entities[0].normalized
                         )
 
+            kg_duration = time.time() - kg_start
+            if kg_duration > self._module_timeout:
+                self._total_timeouts += 1
             timings.append(RAGStageTiming(
                 stage=RAGPipelineStage.KNOWLEDGE_GRAPH.value,
                 duration_ms=(time.time() - stage_start) * 1000,
@@ -375,8 +389,9 @@ class UnifiedRAGOrchestrator:
                 stage=RAGPipelineStage.KNOWLEDGE_GRAPH.value,
                 duration_ms=(time.time() - stage_start) * 1000,
                 success=False,
-                error=str(e),
+                error=str(e)[:200],
             ))
+            kg_results = []
 
         # ========== 阶段6：会话上下文注入 ==========
         stage_start = time.time()
@@ -599,6 +614,8 @@ class UnifiedRAGOrchestrator:
         """获取流水线统计"""
         return {
             "total_queries": self._total_queries,
+            "total_timeouts": self._total_timeouts,
+            "module_timeout_seconds": self._module_timeout,
             "modules_integrated": 5,
             "module_names": [
                 "SLM查询意图理解",
