@@ -16,6 +16,11 @@ std::string KvmCapabilities::to_string() const {
     oss << "  kvm_available: " << (kvm_available ? "yes" : "no") << "\n";
     oss << "  firecracker_available: " << (firecracker_available ? "yes" : "no") << "\n";
     oss << "  cpu_virtualization: " << (cpu_virtualization ? "yes" : "no") << "\n";
+    oss << "  nested_vm: " << (is_nested_vm ? "YES (debug only)" : "no") << "\n";
+    oss << "  production_acceptance: " << (production_acceptance_valid ? "valid" : "INVALID (nested env)") << "\n";
+    if (!nested_warning.empty()) {
+        oss << "  WARNING: " << nested_warning << "\n";
+    }
     oss << "  message: " << message;
     return oss.str();
 }
@@ -49,6 +54,69 @@ bool KvmDetector::firecracker_available(const std::string& binary) {
     std::string cmd = "which " + binary + " > /dev/null 2>&1";
     return system(cmd.c_str()) == 0;
 }
+
+bool KvmDetector::detect_hypervisor_bit() {
+    // 检测 CPUID hypervisor 位（是否运行在虚拟机中）
+    // 方法1：检查 /proc/cpuinfo 中的 hypervisor 标志
+    std::ifstream cpuinfo("/proc/cpuinfo");
+    if (cpuinfo.is_open()) {
+        std::string line;
+        while (std::getline(cpuinfo, line)) {
+            if (line.find("hypervisor") != std::string::npos) {
+                return true;
+            }
+        }
+    }
+    // 方法2：检查 systemd-detect-virt（如果可用）
+    std::string cmd = "systemd-detect-virt --vm 2>/dev/null | grep -qv none";
+    if (system(cmd.c_str()) == 0) {
+        return true;
+    }
+    // 方法3：检查 DMI product name
+    std::ifstream dmi("/sys/class/dmi/id/product_name");
+    if (dmi.is_open()) {
+        std::string product;
+        std::getline(dmi, product);
+        if (product.find("VMware") != std::string::npos ||
+            product.find("VirtualBox") != std::string::npos ||
+            product.find("KVM") != std::string::npos ||
+            product.find("QEMU") != std::string::npos ||
+            product.find("Virtual") != std::string::npos ||
+            product.find("Hyper-V") != std::string::npos) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool KvmDetector::detect_nested_vm() {
+    // 嵌套虚拟化检测：
+    // 1. CPUID hypervisor 位 = 1（运行在虚拟机中）
+    // 2. CPU 有 vmx/svm 标志（客户机可见虚拟化扩展）
+    // 3. /dev/kvm 存在（嵌套 KVM 已开启）
+    // 同时满足以上条件 = 嵌套虚拟化环境
+    bool in_vm = detect_hypervisor_bit();
+    bool has_virt = cpu_supports_virtualization();
+    bool has_kvm = kvm_available("/dev/kvm");
+
+    // 检查 KVM 嵌套参数
+    bool kvm_nested_enabled = false;
+    std::ifstream nested_intel("/sys/module/kvm_intel/parameters/nested");
+    if (nested_intel.is_open()) {
+        std::string val;
+        std::getline(nested_intel, val);
+        kvm_nested_enabled = (val == "Y" || val == "1");
+    }
+    std::ifstream nested_amd("/sys/module/kvm_amd/parameters/nested");
+    if (nested_amd.is_open()) {
+        std::string val;
+        std::getline(nested_amd, val);
+        kvm_nested_enabled = (val == "Y" || val == "1");
+    }
+
+    // 嵌套虚拟化判定：在虚拟机中 + 有虚拟化标志 + 有 /dev/kvm
+    return in_vm && has_virt && has_kvm;
+}
 KvmCapabilities KvmDetector::detect() {
     return detect(StrongPoolConfig());
 }
@@ -77,8 +145,25 @@ KvmCapabilities KvmDetector::detect(const StrongPoolConfig& config) {
             pclose(p);
         }
     }
+    // 嵌套虚拟化检测（仅限调试，禁止生产安全验收）
+    caps.hypervisor_bit_detected = detect_hypervisor_bit();
+    caps.is_nested_vm = detect_nested_vm();
+    if (caps.is_nested_vm) {
+        caps.production_acceptance_valid = false;
+        caps.nested_warning = "Running inside nested virtualization! "
+                              "Security & performance results are NOT valid for production acceptance. "
+                              "Use only for development and debugging.";
+    } else if (caps.hypervisor_bit_detected && !caps.kvm_available) {
+        caps.nested_warning = "Running inside a VM without nested KVM enabled. "
+                              "StrongPool (Firecracker/KVM) cannot start. "
+                              "Enable nested virtualization for development only.";
+    }
+
     if (caps.kvm_available && caps.firecracker_available && caps.cpu_virtualization) {
         caps.message = "MicroVM fully available";
+        if (caps.is_nested_vm) {
+            caps.message += " (NESTED VM - DEBUG ONLY, NOT for production acceptance)";
+        }
     } else if (!caps.kvm_available) {
         caps.message = "KVM not available: " + config.kvm_device +
                        " missing or no permission. MicroVM disabled.";

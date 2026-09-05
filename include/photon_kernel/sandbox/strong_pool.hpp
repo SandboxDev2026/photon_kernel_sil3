@@ -62,6 +62,11 @@ struct KvmCapabilities {
     bool kvm_available = false;           // /dev/kvm 存在且可打开
     bool firecracker_available = false;   // firecracker 二进制存在
     bool cpu_virtualization = false;       // CPU支持VM-X/RV
+    // 嵌套虚拟化检测（仅限调试，禁止生产安全验收）
+    bool is_nested_vm = false;             // 是否运行在嵌套虚拟化环境中
+    bool hypervisor_bit_detected = false;  // CPUID hypervisor 位（运行在虚拟机中）
+    bool production_acceptance_valid = true; // 是否可用于生产验收（嵌套环境为false）
+    std::string nested_warning;            // 嵌套环境警告信息
     std::string kvm_path;
     std::string firecracker_path;
     std::string message;
@@ -79,6 +84,11 @@ public:
     static bool cpu_supports_virtualization();
     // 检查 firecracker 二进制
     static bool firecracker_available(const std::string& binary = "firecracker");
+    // 嵌套虚拟化检测（CPUID hypervisor 位 + KVM 嵌套参数）
+    // 嵌套环境仅限开发调试，禁止生产安全验收
+    static bool detect_nested_vm();
+    // 检测 CPUID hypervisor 位（是否运行在虚拟机中）
+    static bool detect_hypervisor_bit();
 };
 // ==================== VM 实例状态 ====================
 enum class VmInstanceState {
