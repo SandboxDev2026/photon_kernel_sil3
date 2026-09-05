@@ -12,12 +12,17 @@ tests/redblue/
 ├── README.md                    # 本文档（制度流程）
 ├── REPORT_TEMPLATE.md           # 对抗测试报告模板
 ├── run_redblue.sh               # 一键执行全部红队 POC
-├── redteam_poc_ptrace.cpp       # POC-001: ptrace 注入父进程
-├── redteam_poc_fd_leak.cpp      # POC-002: fd 泄露逃逸
-├── redteam_poc_fork_bomb.cpp    # POC-003: fork 炸弹 DoS
-├── redteam_poc_seccomp_bypass.cpp # POC-004: seccomp 绕过尝试
-├── redteam_poc_mount_escape.cpp  # POC-005: mount 逃逸
-└── reports/                      # 对抗测试报告归档目录
+├── redteam_poc_ptrace.cpp          # POC-001: ptrace 注入父进程
+├── redteam_poc_fd_leak.cpp         # POC-002: fd 泄露逃逸
+├── redteam_poc_fork_bomb.cpp       # POC-003: fork 炸弹 DoS
+├── redteam_poc_seccomp_bypass.cpp  # POC-004: seccomp 绕过尝试
+├── redteam_poc_mount_escape.cpp    # POC-005: mount 逃逸
+├── redteam_poc_toctou_race.cpp     # POC-006: TOCTOU 竞争条件逃逸
+├── redteam_poc_32bit_seccomp_bypass.cpp # POC-007: 32位兼容模式 seccomp 绕过
+├── redteam_poc_signal_race.cpp     # POC-008: 信号竞争条件逃逸
+├── redteam_poc_proc_escape.cpp     # POC-009: /proc 接口突破限制
+├── redteam_poc_memory_oom.cpp      # POC-010: 内存耗尽 OOM 拒绝服务
+└── reports/                         # 对抗测试报告归档目录
     └── .gitkeep
 ```
 
@@ -28,6 +33,13 @@ tests/redblue/
 | POC-001 | ptrace 注入 | 沙盒内尝试 ptrace 附加父进程 | 进程被 KILL，审计记录 | Critical |
 | POC-002 | fd 泄露逃逸 | 继承未关闭特权 fd，尝试读写宿主文件 | 访问被拒绝，fd 已关闭 | High |
 | POC-003 | fork 炸弹 | 疯狂 fork 耗尽 PID/资源 | cgroup pid 限制生效，进程被终止 | High |
+| POC-004 | seccomp 绕过 | 尝试多种 seccomp-bpf 绕过技术 | 所有绕过被阻止，进程被 KILL | Critical |
+| POC-005 | mount 逃逸 | 尝试 mount 特殊文件系统突破隔离 | mount 被拒绝，Landlock 生效 | High |
+| POC-006 | TOCTOU 竞争 | access()/open() 之间切换符号链接 | 竞争条件未成功，路径验证有效 | High |
+| POC-007 | 32位兼容绕过 | int 0x80 触发 32位系统调用 | arch 字段验证有效，进程被 KILL | Critical |
+| POC-008 | 信号竞争 | SIGSYS/SIGSTOP 信号处理绕过 | KILL_PROCESS 无信号处理机会 | High |
+| POC-009 | /proc 突破 | /proc/self/mem、sysrq、kcore 等 | Landlock 限制敏感路径访问 | High |
+| POC-010 | 内存 OOM | malloc/mmap/COW/共享内存耗尽 | cgroup memory.max 限制生效 | High |
 | POC-004 | seccomp 绕过 | 32 位兼容模式/syscall 混淆 | 全部被拦截，无绕过 | Critical |
 | POC-005 | mount 逃逸 | 尝试 mount procfs/sysfs 突破隔离 | mount 被 KILL | Critical |
 | POC-006 | 内存炸弹 | 大量 mmap 耗尽内存 | cgroup 内存限制触发 OOM | Medium |

@@ -143,6 +143,7 @@ set(SANDBOX_SOURCES
   src/sandbox/namespace_isolation.cpp
   src/sandbox/seccomp_policy.cpp
   src/sandbox/security_posture.cpp
+  src/sandbox/intrusion_detection.cpp
   agent/message_bus.cpp
   agent/environment.cpp
   agent/agent_base.cpp
@@ -392,4 +393,9 @@ if(BUILD_TESTING)
   target_include_directories(test_security_posture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
   target_link_libraries(test_security_posture photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
   add_test(NAME test_security_posture COMMAND test_security_posture)
+
+  add_executable(test_intrusion_detection tests/test_intrusion_detection.cpp)
+  target_include_directories(test_intrusion_detection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+  target_link_libraries(test_intrusion_detection photon_sandbox GTest::gtest GTest::gtest_main Threads::Threads OpenSSL::SSL OpenSSL::Crypto)
+  add_test(NAME test_intrusion_detection COMMAND test_intrusion_detection)
 endif()
