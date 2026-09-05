@@ -17,6 +17,14 @@ std::string KvmCapabilities::to_string() const {
     oss << "  firecracker_available: " << (firecracker_available ? "yes" : "no") << "\n";
     oss << "  cpu_virtualization: " << (cpu_virtualization ? "yes" : "no") << "\n";
     oss << "  nested_vm: " << (is_nested_vm ? "YES (debug only)" : "no") << "\n";
+    oss << "  hypervisor_type: " << (hypervisor_type.empty() ? "unknown" : hypervisor_type) << "\n";
+    if (!hypervisor_vendor.empty()) {
+        oss << "  hypervisor_vendor: " << hypervisor_vendor << "\n";
+    }
+    oss << "  nested_virt_supported: " << (nested_virt_supported ? "yes" : "no") << "\n";
+    if (!nested_virt_note.empty()) {
+        oss << "  nested_virt_note: " << nested_virt_note << "\n";
+    }
     oss << "  production_acceptance: " << (production_acceptance_valid ? "valid" : "INVALID (nested env)") << "\n";
     if (!nested_warning.empty()) {
         oss << "  WARNING: " << nested_warning << "\n";
@@ -117,6 +125,124 @@ bool KvmDetector::detect_nested_vm() {
     // 嵌套虚拟化判定：在虚拟机中 + 有虚拟化标志 + 有 /dev/kvm
     return in_vm && has_virt && has_kvm;
 }
+
+std::string KvmDetector::detect_hypervisor_vendor() {
+    // 读取 CPUID 0x40000000 返回的 hypervisor 厂商字符串
+    // 通过 /proc/cpuinfo 或执行 cpuid 命令获取
+    std::string cmd = "cpuid -1 -r 2>/dev/null | grep '0x40000000' | head -1";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (p) {
+        char buf[256];
+        if (fgets(buf, sizeof(buf), p)) {
+            std::string line(buf);
+            // 解析 eax=0x40000000 时的 ebx/ecx/edx 组成厂商字符串
+            // 格式: eax=0x40000000 ebx=... ecx=... edx=...
+            pclose(p);
+            // 简单提取：如果有 KVMKVMKVM、VMwareVMware、Microsoft Hv 等
+            if (line.find("KVMKVMKVM") != std::string::npos) return "KVM";
+            if (line.find("VMwareVMware") != std::string::npos) return "VMware";
+            if (line.find("Microsoft Hv") != std::string::npos) return "Microsoft Hyper-V";
+            if (line.find("XenVMMXenVMM") != std::string::npos) return "Xen";
+            if (line.find("TCGTCGTCGTCG") != std::string::npos) return "QEMU TCG";
+        }
+        pclose(p);
+    }
+    return "";
+}
+
+std::string KvmDetector::detect_hypervisor_type() {
+    // 多重检测识别 hypervisor 类型
+    // 1. DMI sys_vendor
+    std::ifstream sys_vendor("/sys/class/dmi/id/sys_vendor");
+    if (sys_vendor.is_open()) {
+        std::string vendor;
+        std::getline(sys_vendor, vendor);
+        if (vendor.find("QEMU") != std::string::npos) return "QEMU-KVM";
+        if (vendor.find("VMware") != std::string::npos) return "VMware";
+        if (vendor.find("VirtualBox") != std::string::npos) return "VirtualBox";
+        if (vendor.find("Microsoft") != std::string::npos) return "Hyper-V";
+        if (vendor.find("Xen") != std::string::npos) return "Xen";
+        if (vendor.find("Amazon") != std::string::npos) return "AWS Nitro";
+        if (vendor.find("Google") != std::string::npos) return "Google Compute Engine";
+        if (vendor.find("OpenStack") != std::string::npos) return "OpenStack KVM";
+    }
+
+    // 2. DMI product_name
+    std::ifstream product_name("/sys/class/dmi/id/product_name");
+    if (product_name.is_open()) {
+        std::string product;
+        std::getline(product_name, product);
+        if (product.find("VMware") != std::string::npos) return "VMware";
+        if (product.find("VirtualBox") != std::string::npos) return "VirtualBox";
+        if (product.find("KVM") != std::string::npos) return "QEMU-KVM";
+        if (product.find("QEMU") != std::string::npos) return "QEMU-KVM";
+        if (product.find("Hyper-V") != std::string::npos) return "Hyper-V";
+        if (product.find("Virtual") != std::string::npos) return "Generic-VM";
+        if (product.find("Standard PC") != std::string::npos) return "QEMU-KVM";
+    }
+
+    // 3. CPUID hypervisor 厂商字符串
+    std::string vendor = detect_hypervisor_vendor();
+    if (!vendor.empty()) {
+        if (vendor == "KVM") return "QEMU-KVM";
+        return vendor;
+    }
+
+    // 4. systemd-detect-virt
+    std::string cmd = "systemd-detect-virt --vm 2>/dev/null";
+    FILE* p = popen(cmd.c_str(), "r");
+    if (p) {
+        char buf[64];
+        if (fgets(buf, sizeof(buf), p)) {
+            std::string virt(buf);
+            while (!virt.empty() && (virt.back() == '\n' || virt.back() == '\r')) {
+                virt.pop_back();
+            }
+            pclose(p);
+            if (virt == "kvm") return "QEMU-KVM";
+            if (virt == "qemu") return "QEMU-TCG";
+            if (virt == "vmware") return "VMware";
+            if (virt == "oracle") return "VirtualBox";
+            if (virt == "microsoft") return "Hyper-V";
+            if (virt == "xen") return "Xen";
+            if (virt == "bochs") return "Bochs";
+            if (virt != "none" && !virt.empty()) return virt;
+        } else {
+            pclose(p);
+        }
+    }
+
+    // 5. 检查是否有 hypervisor 位但无法识别类型
+    if (detect_hypervisor_bit()) {
+        return "Unknown-Hypervisor";
+    }
+
+    return "Bare-Metal";
+}
+
+bool KvmDetector::check_nested_virt_support(const std::string& hypervisor_type) {
+    // 嵌套虚拟化支持矩阵（基于开源项目调研）
+    // 支持嵌套虚拟化的 hypervisor:
+    // - QEMU-KVM: 支持（需加载 kvm_intel.nested=1 或 kvm_amd.nested=1）
+    // - VMware Workstation/ESXi: 支持（VHV 开启）
+    // - VirtualBox: 支持（>=6.1，需手动开启）
+    // - Hyper-V: 支持（ExposeVirtualizationExtensions）
+    // - Cloud Hypervisor: x86_64 默认允许
+    // - Xen: 支持
+    // - AWS Nitro: 部分实例支持（metal 实例）
+    // - Google Compute Engine: 部分实例支持（n2d-standard 等）
+    // - Bare-Metal: 原生支持（非嵌套）
+    if (hypervisor_type == "Bare-Metal") return true;
+    if (hypervisor_type == "QEMU-KVM") return true;
+    if (hypervisor_type == "VMware") return true;
+    if (hypervisor_type == "VirtualBox") return true;
+    if (hypervisor_type == "Hyper-V") return true;
+    if (hypervisor_type == "Cloud-Hypervisor") return true;
+    if (hypervisor_type == "Xen") return true;
+    if (hypervisor_type == "AWS Nitro") return false;  // 普通实例不支持，需 metal
+    if (hypervisor_type == "Google Compute Engine") return false;  // 普通实例不支持
+    return false;  // Unknown 或不支持
+}
 KvmCapabilities KvmDetector::detect() {
     return detect(StrongPoolConfig());
 }
@@ -147,16 +273,35 @@ KvmCapabilities KvmDetector::detect(const StrongPoolConfig& config) {
     }
     // 嵌套虚拟化检测（仅限调试，禁止生产安全验收）
     caps.hypervisor_bit_detected = detect_hypervisor_bit();
+    caps.hypervisor_type = detect_hypervisor_type();
+    caps.hypervisor_vendor = detect_hypervisor_vendor();
+    caps.nested_virt_supported = check_nested_virt_support(caps.hypervisor_type);
     caps.is_nested_vm = detect_nested_vm();
+
+    // 嵌套虚拟化支持说明
+    if (caps.hypervisor_type == "QEMU-KVM") {
+        caps.nested_virt_note = "Enable with: kvm_intel.nested=1 or kvm_amd.nested=1 (kernel param)";
+    } else if (caps.hypervisor_type == "VMware") {
+        caps.nested_virt_note = "Enable in VM settings: Virtualize Intel VT-x/EPT or AMD-V/RVI";
+    } else if (caps.hypervisor_type == "VirtualBox") {
+        caps.nested_virt_note = "Enable in VM settings: System -> Processor -> Enable Nested VT-x/AMD-V (>=6.1)";
+    } else if (caps.hypervisor_type == "Hyper-V") {
+        caps.nested_virt_note = "Enable with: Set-VMProcessor -ExposeVirtualizationExtensions $true";
+    } else if (caps.hypervisor_type == "Bare-Metal") {
+        caps.nested_virt_note = "Native hardware virtualization, no nesting required";
+    } else if (!caps.nested_virt_supported) {
+        caps.nested_virt_note = "This hypervisor may not support nested virtualization on standard instances";
+    }
+
     if (caps.is_nested_vm) {
         caps.production_acceptance_valid = false;
-        caps.nested_warning = "Running inside nested virtualization! "
+        caps.nested_warning = "Running inside nested virtualization (" + caps.hypervisor_type + ")! "
                               "Security & performance results are NOT valid for production acceptance. "
                               "Use only for development and debugging.";
     } else if (caps.hypervisor_bit_detected && !caps.kvm_available) {
-        caps.nested_warning = "Running inside a VM without nested KVM enabled. "
+        caps.nested_warning = "Running inside " + caps.hypervisor_type + " VM without nested KVM enabled. "
                               "StrongPool (Firecracker/KVM) cannot start. "
-                              "Enable nested virtualization for development only.";
+                              "Enable nested virtualization for development only. " + caps.nested_virt_note;
     }
 
     if (caps.kvm_available && caps.firecracker_available && caps.cpu_virtualization) {

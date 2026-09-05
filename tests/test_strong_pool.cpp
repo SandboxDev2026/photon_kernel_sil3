@@ -293,6 +293,50 @@ TEST(KvmDetectorTest, CapabilitiesToStringIncludesNestedInfo) {
     printf("  to_string() includes nested VM info: OK\n");
 }
 
+TEST(KvmDetectorTest, HypervisorTypeDetection) {
+    // Hypervisor 类型精确识别
+    std::string type = KvmDetector::detect_hypervisor_type();
+    EXPECT_FALSE(type.empty());
+    printf("  Hypervisor type detected: %s\n", type.c_str());
+    // 验证类型是已知类型之一
+    bool known_type = (type == "QEMU-KVM" || type == "VMware" || type == "VirtualBox" ||
+                       type == "Hyper-V" || type == "Xen" || type == "Bare-Metal" ||
+                       type == "AWS Nitro" || type == "Google Compute Engine" ||
+                       type == "Generic-VM" || type == "Unknown-Hypervisor" ||
+                       type == "QEMU-TCG" || type == "Cloud-Hypervisor");
+    EXPECT_TRUE(known_type);
+}
+
+TEST(KvmDetectorTest, NestedVirtSupportMatrix) {
+    // 嵌套虚拟化支持矩阵验证
+    // 支持嵌套的 hypervisor
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("QEMU-KVM"));
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("VMware"));
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("VirtualBox"));
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("Hyper-V"));
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("Xen"));
+    EXPECT_TRUE(KvmDetector::check_nested_virt_support("Bare-Metal"));
+    // 普通云实例不支持嵌套
+    EXPECT_FALSE(KvmDetector::check_nested_virt_support("AWS Nitro"));
+    EXPECT_FALSE(KvmDetector::check_nested_virt_support("Google Compute Engine"));
+    printf("  Nested virt support matrix: verified\n");
+}
+
+TEST(KvmDetectorTest, CapabilitiesIncludesHypervisorInfo) {
+    // KvmCapabilities 必须包含 hypervisor 信息
+    auto caps = KvmDetector::detect();
+    EXPECT_FALSE(caps.hypervisor_type.empty());
+    std::string str = caps.to_string();
+    EXPECT_NE(str.find("hypervisor_type"), std::string::npos);
+    EXPECT_NE(str.find("nested_virt_supported"), std::string::npos);
+    printf("  Hypervisor info in capabilities: type=%s, nested_supported=%s\n",
+           caps.hypervisor_type.c_str(),
+           caps.nested_virt_supported ? "yes" : "no");
+    if (!caps.nested_virt_note.empty()) {
+        printf("  Nested virt note: %s\n", caps.nested_virt_note.c_str());
+    }
+}
+
 int main(int argc, char** argv) {
     ::testing::InitGoogleTest(&argc, argv);
     return RUN_ALL_TESTS();

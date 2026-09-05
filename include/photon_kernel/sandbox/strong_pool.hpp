@@ -67,6 +67,11 @@ struct KvmCapabilities {
     bool hypervisor_bit_detected = false;  // CPUID hypervisor 位（运行在虚拟机中）
     bool production_acceptance_valid = true; // 是否可用于生产验收（嵌套环境为false）
     std::string nested_warning;            // 嵌套环境警告信息
+    // Hypervisor 类型精确识别
+    std::string hypervisor_type;           // hypervisor类型: QEMU-KVM/VMware/VirtualBox/Hyper-V/Cloud-Hypervisor/Xen/Bare-Metal/Unknown
+    std::string hypervisor_vendor;         // CPUID 0x40000000 返回的厂商字符串
+    bool nested_virt_supported = false;    // 该hypervisor是否支持嵌套虚拟化
+    std::string nested_virt_note;          // 嵌套虚拟化支持说明
     std::string kvm_path;
     std::string firecracker_path;
     std::string message;
@@ -89,6 +94,12 @@ public:
     static bool detect_nested_vm();
     // 检测 CPUID hypervisor 位（是否运行在虚拟机中）
     static bool detect_hypervisor_bit();
+    // Hypervisor 类型精确识别（QEMU-KVM/VMware/VirtualBox/Hyper-V等）
+    static std::string detect_hypervisor_type();
+    // CPUID 0x40000000 返回的 hypervisor 厂商字符串
+    static std::string detect_hypervisor_vendor();
+    // 检查该 hypervisor 是否支持嵌套虚拟化
+    static bool check_nested_virt_support(const std::string& hypervisor_type);
 };
 // ==================== VM 实例状态 ====================
 enum class VmInstanceState {
