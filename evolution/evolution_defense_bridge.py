@@ -193,10 +193,24 @@ class EvolutionDefenseBridge:
         self.current_phase = BridgePhase.CONVERTING
         self.stats["total_rules_received"] += len(rules)
 
+        # 1. 将规则转换为配置更新
+        deployment_results, all_config_updates = self._convert_rules_to_updates(rules, source_event)
+
+        # 2. 排队并下发配置更新
+        self._apply_config_updates(all_config_updates, max_priority)
+
+        self.current_phase = BridgePhase.MONITORING
+
+        # 3. 构建部署结果
+        return self._build_deployment_result(rules, deployment_results)
+
+    def _convert_rules_to_updates(
+        self, rules: List[DefenseRule], source_event: Optional[SecurityEvent]
+    ) -> tuple:
+        """将每条 DefenseRule 转换为 ConfigUpdate，返回(部署结果列表, 所有配置更新)"""
         deployment_results = []
         all_config_updates: List[ConfigUpdate] = []
 
-        # 1. 将每条 DefenseRule 转换为 ConfigUpdate
         for rule in rules:
             # 跳过已熔断的规则
             if self._is_circuit_broken(rule.rule_id):
@@ -238,31 +252,41 @@ class EvolutionDefenseBridge:
                     "reason": "无法生成配置更新（防御类型不支持或配置目标不可用）",
                 })
 
-        # 2. 排队并下发配置更新
-        if all_config_updates and not self.dry_run:
-            self.current_phase = BridgePhase.ENQUEUING
-            self.enforcer.enqueue_updates(all_config_updates)
+        return deployment_results, all_config_updates
 
-            self.current_phase = BridgePhase.APPLYING
-            apply_result = self.enforcer.apply_pending(max_priority=max_priority)
-            self.stats["total_config_updates_applied"] += apply_result.get("applied", 0)
+    def _apply_config_updates(
+        self, all_config_updates: List[ConfigUpdate], max_priority: Optional[str]
+    ) -> None:
+        """排队并下发配置更新，更新部署记录状态"""
+        if not all_config_updates:
+            return
 
-            # 更新部署记录状态
-            applied_ids = set(apply_result.get("applied_ids", []))
-            for rule_id, record in self.deployment_records.items():
-                if record.deployment_status == "pending":
-                    record.deployment_status = "applied"
-                    record.deployed_at = time.time()
-                    self.stats["total_rules_deployed"] += 1
-
-        elif all_config_updates and self.dry_run:
+        if self.dry_run:
             # 试运行模式：只记录，不下发
             for record in self.deployment_records.values():
                 if record.deployment_status == "pending":
                     record.deployment_status = "dry_run"
+            return
 
-        self.current_phase = BridgePhase.MONITORING
+        # 正式下发
+        self.current_phase = BridgePhase.ENQUEUING
+        self.enforcer.enqueue_updates(all_config_updates)
 
+        self.current_phase = BridgePhase.APPLYING
+        apply_result = self.enforcer.apply_pending(max_priority=max_priority)
+        self.stats["total_config_updates_applied"] += apply_result.get("applied", 0)
+
+        # 更新部署记录状态
+        for record in self.deployment_records.values():
+            if record.deployment_status == "pending":
+                record.deployment_status = "applied"
+                record.deployed_at = time.time()
+                self.stats["total_rules_deployed"] += 1
+
+    def _build_deployment_result(
+        self, rules: List[DefenseRule], deployment_results: List[Dict]
+    ) -> Dict[str, Any]:
+        """构建标准化部署结果字典"""
         return {
             "phase": self.current_phase.value,
             "total_rules_received": len(rules),
@@ -273,6 +297,7 @@ class EvolutionDefenseBridge:
             "dry_run": self.dry_run,
             "timestamp": time.time(),
         }
+
 
     def record_rule_trigger(
         self,
