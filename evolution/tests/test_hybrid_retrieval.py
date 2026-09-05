@@ -17,6 +17,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from evolution.hybrid_retrieval import (
+    EmbeddingModel, TFIDFEmbedding, SemanticEnhancer,
     RetrievalConfig, SearchDocument, SearchResult,
     tokenize, KeywordRetriever, VectorRetriever, GraphRetriever,
     HybridRetriever, SecurityEventRetriever,
@@ -466,6 +467,180 @@ class TestConvenienceFunctions(unittest.TestCase):
         config = RetrievalConfig(top_k=5)
         retriever = create_hybrid_retriever(config)
         self.assertEqual(retriever.config.top_k, 5)
+
+
+
+class TestEmbeddingModel(unittest.TestCase):
+    """嵌入模型抽象测试"""
+
+    def test_tfidf_embedding_fit(self):
+        """TF-IDF 嵌入模型拟合"""
+        model = TFIDFEmbedding()
+        docs = ["python security sandbox", "kvm firecracker virtualization"]
+        model.fit(docs)
+        self.assertEqual(model.doc_count, 2)
+        self.assertGreater(len(model.vocabulary), 0)
+
+    def test_tfidf_embedding_embed(self):
+        """TF-IDF 嵌入"""
+        model = TFIDFEmbedding()
+        docs = ["python security sandbox", "kvm firecracker virtualization"]
+        model.fit(docs)
+        vector = model.embed("python security")
+        self.assertEqual(len(vector), len(model.vocabulary))
+        self.assertIsInstance(vector, list)
+        self.assertTrue(all(isinstance(v, float) for v in vector))
+
+    def test_tfidf_embedding_dimension(self):
+        """嵌入维度"""
+        model = TFIDFEmbedding()
+        model.fit(["test document"])
+        self.assertEqual(model.dimension(), len(model.vocabulary))
+
+    def test_tfidf_embedding_similarity(self):
+        """嵌入相似度"""
+        model = TFIDFEmbedding()
+        docs = ["python security sandbox", "python machine learning"]
+        model.fit(docs)
+        v1 = model.embed("python security")
+        v2 = model.embed("python machine")
+        sim = model.similarity(v1, v2)
+        self.assertGreaterEqual(sim, 0.0)
+        self.assertLessEqual(sim, 1.0)
+
+    def test_tfidf_embedding_empty_vocab(self):
+        """空词表嵌入"""
+        model = TFIDFEmbedding()
+        vector = model.embed("test")
+        self.assertEqual(vector, [])
+
+    def test_embedding_model_abstract(self):
+        """嵌入模型抽象基类不能直接实例化"""
+        with self.assertRaises(TypeError):
+            EmbeddingModel()
+
+
+class TestSemanticEnhancer(unittest.TestCase):
+    """语义增强器测试"""
+
+    def setUp(self):
+        self.enhancer = SemanticEnhancer()
+
+    def test_expand_query_basic(self):
+        """基本同义词扩展"""
+        expanded = self.enhancer.expand_query("escape sandbox")
+        self.assertIn("escape", expanded)
+        self.assertIn("sandbox", expanded)
+        # escape 的同义词应该被扩展
+        self.assertTrue(any(syn in expanded for syn in ["evasion", "breakout", "jailbreak"]))
+
+    def test_expand_query_no_synonyms(self):
+        """无同义词的词不扩展"""
+        expanded = self.enhancer.expand_query("xyz_nonexistent")
+        self.assertEqual(expanded, "xyz_nonexistent")
+
+    def test_expand_query_max_synonyms(self):
+        """最大同义词数量限制"""
+        expanded = self.enhancer.expand_query("escape", max_synonyms_per_term=1)
+        words = expanded.split()
+        # 原始词 + 最多1个同义词 = 最多2个词
+        self.assertLessEqual(len(words), 2)
+
+    def test_generate_bigrams(self):
+        """生成 bigram"""
+        ngrams = self.enhancer.generate_ngrams("python security sandbox", n=2)
+        self.assertIn("python_security", ngrams)
+        self.assertIn("security_sandbox", ngrams)
+        self.assertEqual(len(ngrams), 2)
+
+    def test_generate_trigrams(self):
+        """生成 trigram"""
+        ngrams = self.enhancer.generate_ngrams("python security sandbox test", n=3)
+        self.assertIn("python_security_sandbox", ngrams)
+        self.assertIn("security_sandbox_test", ngrams)
+        self.assertEqual(len(ngrams), 2)
+
+    def test_generate_ngrams_too_short(self):
+        """文本太短无法生成 n-gram"""
+        ngrams = self.enhancer.generate_ngrams("test", n=2)
+        self.assertEqual(ngrams, [])
+
+    def test_semantic_similarity_identical(self):
+        """相同文本语义相似度为 1"""
+        sim = self.enhancer.semantic_similarity("python security", "python security")
+        self.assertAlmostEqual(sim, 1.0, places=1)
+
+    def test_semantic_similarity_different(self):
+        """不同文本语义相似度小于 1"""
+        sim = self.enhancer.semantic_similarity("python security", "kvm virtualization")
+        self.assertLess(sim, 1.0)
+
+    def test_semantic_similarity_synonyms(self):
+        """同义词提升相似度"""
+        sim_with_synonym = self.enhancer.semantic_similarity(
+            "escape attempt", "evasion attempt"
+        )
+        sim_no_synonym = self.enhancer.semantic_similarity(
+            "escape attempt", "xyz attempt"
+        )
+        # 有同义词的相似度应该高于无同义词
+        self.assertGreater(sim_with_synonym, sim_no_synonym)
+
+    def test_semantic_similarity_empty(self):
+        """空文本相似度为 0"""
+        sim = self.enhancer.semantic_similarity("", "test")
+        self.assertEqual(sim, 0.0)
+
+    def test_synonyms_dict_security_terms(self):
+        """安全领域同义词表包含关键术语"""
+        self.assertIn("escape", self.enhancer.SYNONYMS)
+        self.assertIn("vulnerability", self.enhancer.SYNONYMS)
+        self.assertIn("sandbox", self.enhancer.SYNONYMS)
+        self.assertIn("seccomp", self.enhancer.SYNONYMS)
+        self.assertIn("firecracker", self.enhancer.SYNONYMS)
+
+
+class TestVectorRetrieverWithEmbedding(unittest.TestCase):
+    """带嵌入模型的向量检索测试"""
+
+    def test_precomputed_embedding(self):
+        """预计算嵌入检索"""
+        config = RetrievalConfig()
+        retriever = VectorRetriever(config)
+        # 添加带预计算嵌入的文档
+        doc1 = SearchDocument(
+            "doc1", "python security",
+            embedding=[1.0, 0.0, 0.0]
+        )
+        doc2 = SearchDocument(
+            "doc2", "kvm virtualization",
+            embedding=[0.0, 1.0, 0.0]
+        )
+        retriever.add_document(doc1)
+        retriever.add_document(doc2)
+        self.assertTrue(retriever.use_dense_embedding)
+        self.assertIn("doc1", retriever.doc_dense_vectors)
+        self.assertEqual(retriever.doc_dense_vectors["doc1"], [1.0, 0.0, 0.0])
+
+    def test_tfidf_embedding_model(self):
+        """使用 TF-IDF 嵌入模型"""
+        model = TFIDFEmbedding()
+        model.fit(["python security sandbox", "kvm firecracker"])
+        retriever = VectorRetriever(embedding_model=model)
+        doc = SearchDocument("doc1", "python security")
+        retriever.add_document(doc)
+        self.assertTrue(retriever.use_dense_embedding)
+        self.assertIn("doc1", retriever.doc_dense_vectors)
+        self.assertEqual(len(retriever.doc_dense_vectors["doc1"]), model.dimension())
+
+    def test_sparse_mode_default(self):
+        """默认使用稀疏 TF-IDF 模式"""
+        retriever = VectorRetriever()
+        self.assertFalse(retriever.use_dense_embedding)
+        doc = SearchDocument("doc1", "python security")
+        retriever.add_document(doc)
+        self.assertIn("doc1", retriever.doc_vectors)
+        self.assertNotIn("doc1", retriever.doc_dense_vectors)
 
 
 if __name__ == "__main__":

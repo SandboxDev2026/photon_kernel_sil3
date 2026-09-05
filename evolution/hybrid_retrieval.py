@@ -24,6 +24,7 @@ import time
 import hashlib
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
+from abc import ABC, abstractmethod
 from collections import defaultdict
 
 
@@ -93,6 +94,295 @@ STOPWORDS = {
     "under", "until", "up", "down", "out", "off", "over", "then", "once",
     "here", "there", "also", "further", "however", "therefore", "thus",
 }
+
+
+# ==================== 嵌入模型抽象（可插拔） ====================
+
+class EmbeddingModel(ABC):
+    """
+    嵌入模型抽象基类
+
+    定义文本嵌入的统一接口，支持平滑替换为不同的嵌入模型：
+    - TFIDFEmbedding：词袋 TF-IDF 稀疏向量（当前默认）
+    - DenseEmbeddingModel：密集向量模型（BGE、text-embedding-ada-002 等）
+    - 自定义模型：继承此类实现 embed() 方法即可
+
+    生产级语义检索应使用密集向量嵌入模型（如 BGE-large-zh）。
+    """
+
+    @abstractmethod
+    def embed(self, text: str) -> List[float]:
+        """
+        将文本嵌入为向量
+
+        Args:
+            text: 输入文本
+
+        Returns:
+            向量表示（浮点数列表）
+        """
+        pass
+
+    @abstractmethod
+    def dimension(self) -> int:
+        """返回向量维度"""
+        pass
+
+    def similarity(self, v1: List[float], v2: List[float]) -> float:
+        """
+        计算两个向量的余弦相似度
+
+        默认实现：余弦相似度。
+        子类可覆盖为其他相似度度量（如点积、欧氏距离）。
+        """
+        if not v1 or not v2 or len(v1) != len(v2):
+            return 0.0
+        dot_product = sum(a * b for a, b in zip(v1, v2))
+        norm1 = math.sqrt(sum(a * a for a in v1))
+        norm2 = math.sqrt(sum(b * b for b in v2))
+        if norm1 == 0 or norm2 == 0:
+            return 0.0
+        return dot_product / (norm1 * norm2)
+
+
+class TFIDFEmbedding(EmbeddingModel):
+    """
+    TF-IDF 词袋嵌入模型（稀疏向量的密集表示）
+
+    当前默认实现，基于词频和逆文档频率。
+    优点：无需外部依赖、计算快、可解释性强。
+    缺点：无法捕捉语义相似度（同义词、上下文）。
+
+    后续可平滑替换为 BGE 等密集向量模型。
+    """
+
+    def __init__(self, config: Optional[RetrievalConfig] = None):
+        self.config = config or RetrievalConfig()
+        self.vocabulary: Dict[str, int] = {}
+        self.idf: Dict[str, float] = {}
+        self.doc_count: int = 0
+        self.doc_term_freq: List[Dict[str, int]] = []
+
+    def fit(self, documents: List[str]) -> None:
+        """
+        拟合语料库，构建词表和 IDF
+
+        Args:
+            documents: 文档列表
+        """
+        self.vocabulary = {}
+        self.doc_term_freq = []
+        self.doc_count = len(documents)
+
+        # 构建词表
+        for doc in documents:
+            tokens = tokenize(doc, self.config)
+            tf: Dict[str, int] = defaultdict(int)
+            for token in tokens:
+                if token not in self.vocabulary:
+                    self.vocabulary[token] = len(self.vocabulary)
+                tf[token] += 1
+            self.doc_term_freq.append(dict(tf))
+
+        # 计算 IDF
+        self.idf = {}
+        for term in self.vocabulary:
+            df = sum(1 for tf in self.doc_term_freq if term in tf)
+            if df > 0:
+                self.idf[term] = math.log((1 + self.doc_count) / (1 + df)) + 1
+
+    def embed(self, text: str) -> List[float]:
+        """
+        将文本嵌入为 TF-IDF 向量
+
+        Returns:
+            密集向量（维度 = 词表大小）
+        """
+        if not self.vocabulary:
+            return []
+
+        tokens = tokenize(text, self.config)
+        tf: Dict[str, int] = defaultdict(int)
+        for token in tokens:
+            if token in self.vocabulary:
+                tf[token] += 1
+
+        vector = [0.0] * len(self.vocabulary)
+        for term, freq in tf.items():
+            idx = self.vocabulary[term]
+            vector[idx] = freq * self.idf.get(term, 0.0)
+        return vector
+
+    def dimension(self) -> int:
+        return len(self.vocabulary)
+
+
+class SemanticEnhancer:
+    """
+    语义增强器
+
+    在不使用真正嵌入模型的情况下，通过以下方式提升检索的语义性：
+    1. 同义词扩展：查询词扩展为同义词集合
+    2. n-gram 匹配：捕捉短语级别的匹配
+    3. 词形还原：简单的词形归一化
+
+    这是 TF-IDF 到真正语义检索之间的过渡方案。
+    """
+
+    # 安全领域同义词表（简化版）
+    SYNONYMS: Dict[str, List[str]] = {
+        "escape": ["evasion", "breakout", "jailbreak"],
+        "vulnerability": ["cve", "exploit", "weakness", "flaw"],
+        "exploit": ["vulnerability", "attack", "payload"],
+        "sandbox": ["container", "isolation", "jail"],
+        "isolation": ["sandbox", "container", "separation"],
+        "container": ["sandbox", "isolation", "docker"],
+        "attack": ["exploit", "intrusion", "breach"],
+        "intrusion": ["attack", "breach", "infiltration"],
+        "detection": ["monitoring", "observation", "detection"],
+        "monitoring": ["detection", "observation", "watching"],
+        "block": ["deny", "reject", "prevent", "intercept"],
+        "deny": ["block", "reject", "prevent"],
+        "prevent": ["block", "deny", "stop", "mitigate"],
+        "bypass": ["circumvent", "evade", "skip"],
+        "circumvent": ["bypass", "evade", "avoid"],
+        "privilege": ["permission", "access", "right"],
+        "permission": ["privilege", "access", "right"],
+        "kernel": ["core", "inner", "os"],
+        "memory": ["ram", "storage", "space"],
+        "network": ["net", "connection", "traffic"],
+        "traffic": ["network", "flow", "data"],
+        "process": ["task", "thread", "execution"],
+        "thread": ["process", "task", "execution"],
+        "file": ["document", "data", "object"],
+        "system": ["os", "platform", "environment"],
+        "security": ["safety", "protection", "defense"],
+        "protection": ["security", "defense", "safeguard"],
+        "defense": ["security", "protection", "guard"],
+        "audit": ["logging", "tracking", "review"],
+        "logging": ["audit", "tracking", "recording"],
+        "policy": ["rule", "regulation", "guideline"],
+        "rule": ["policy", "regulation", "guideline"],
+        "configuration": ["config", "setup", "settings"],
+        "config": ["configuration", "setup", "settings"],
+        "performance": ["speed", "efficiency", "throughput"],
+        "efficiency": ["performance", "speed", "optimization"],
+        "error": ["bug", "fault", "failure", "exception"],
+        "bug": ["error", "fault", "defect"],
+        "failure": ["error", "fault", "crash"],
+        "crash": ["failure", "error", "panic"],
+        "timeout": ["expiration", "deadline", "limit"],
+        "limit": ["bound", "cap", "threshold", "maximum"],
+        "threshold": ["limit", "bound", "cutoff"],
+        "resource": ["asset", "capacity", "allocation"],
+        "allocation": ["resource", "distribution", "assignment"],
+        "scheduling": ["dispatch", "planning", "orchestration"],
+        "dispatch": ["scheduling", "routing", "assignment"],
+        "cluster": ["group", "fleet", "nodes"],
+        "node": ["instance", "server", "machine"],
+        "instance": ["node", "server", "vm", "container"],
+        "virtualization": ["vm", "hypervisor", "emulation"],
+        "hypervisor": ["virtualization", "vmm", "monitor"],
+        "microvm": ["micro-vm", "microvm", "lightweight-vm"],
+        "seccomp": ["syscall-filter", "secure-computing"],
+        "ebpf": ["bpf", "berkeley-packet-filter", "extended-bpf"],
+        "namespace": ["ns", "isolation-domain", "separation"],
+        "cgroup": ["control-group", "resource-control"],
+        "landlock": ["sandboxing", "restricted-filesystem"],
+        "firecracker": ["microvm", "aws-firecracker", "lightweight-vmm"],
+        "kvm": ["kernel-vm", "virtualization", "hardware-virt"],
+    }
+
+    def __init__(self, config: Optional[RetrievalConfig] = None):
+        self.config = config or RetrievalConfig()
+
+    def expand_query(self, query: str, max_synonyms_per_term: int = 2) -> str:
+        """
+        同义词扩展查询
+
+        将查询中的每个词扩展为同义词集合，提升召回率。
+
+        Args:
+            query: 原始查询
+            max_synonyms_per_term: 每个词最多扩展的同义词数量
+
+        Returns:
+            扩展后的查询（原始词 + 同义词）
+        """
+        tokens = tokenize(query, self.config)
+        expanded = list(tokens)
+
+        for token in tokens:
+            synonyms = self.SYNONYMS.get(token.lower(), [])
+            for syn in synonyms[:max_synonyms_per_term]:
+                if syn not in expanded:
+                    expanded.append(syn)
+
+        return " ".join(expanded)
+
+    def generate_ngrams(self, text: str, n: int = 2) -> List[str]:
+        """
+        生成 n-gram 短语
+
+        Args:
+            text: 输入文本
+            n: n-gram 的 n 值（2=bigram, 3=trigram）
+
+        Returns:
+            n-gram 短语列表
+        """
+        tokens = tokenize(text, self.config)
+        if len(tokens) < n:
+            return []
+        ngrams = []
+        for i in range(len(tokens) - n + 1):
+            ngram = "_".join(tokens[i:i + n])
+            ngrams.append(ngram)
+        return ngrams
+
+    def semantic_similarity(self, text1: str, text2: str) -> float:
+        """
+        计算语义相似度（简化版）
+
+        基于：
+        1. 词重叠（Jaccard 相似度）
+        2. 同义词匹配
+        3. n-gram 重叠
+
+        这是真正语义嵌入的近似替代。
+        """
+        # 快速路径：完全相同的文本相似度为 1.0
+        if text1.strip().lower() == text2.strip().lower():
+            return 1.0
+
+        tokens1 = set(tokenize(text1, self.config))
+        tokens2 = set(tokenize(text2, self.config))
+
+        if not tokens1 or not tokens2:
+            return 0.0
+
+        # 1. 词重叠 Jaccard
+        intersection = tokens1 & tokens2
+        union = tokens1 | tokens2
+        jaccard = len(intersection) / len(union) if union else 0.0
+
+        # 2. 同义词匹配
+        synonym_matches = 0
+        for t1 in tokens1:
+            synonyms = set(self.SYNONYMS.get(t1.lower(), []))
+            if synonyms & tokens2:
+                synonym_matches += 1
+        synonym_score = synonym_matches / len(tokens1) if tokens1 else 0.0
+
+        # 3. bigram 重叠
+        bigrams1 = set(self.generate_ngrams(text1, n=2))
+        bigrams2 = set(self.generate_ngrams(text2, n=2))
+        bigram_intersection = bigrams1 & bigrams2
+        bigram_union = bigrams1 | bigrams2
+        bigram_score = len(bigram_intersection) / len(bigram_union) if bigram_union else 0.0
+
+        # 加权融合
+        return 0.4 * jaccard + 0.35 * synonym_score + 0.25 * bigram_score
 
 
 def tokenize(text: str, config: RetrievalConfig) -> List[str]:
@@ -227,45 +517,64 @@ class KeywordRetriever:
 
 class VectorRetriever:
     """
-    向量检索器（余弦相似度，词袋向量）
+    向量检索器（余弦相似度，支持可插拔嵌入模型）
 
-    简化版：使用词袋模型 + TF-IDF 权重构建向量，计算余弦相似度。
-    生产级应使用嵌入模型（如 BGE、text-embedding-ada-002）生成向量。
+    支持两种向量模式：
+    1. 稀疏 TF-IDF 向量（默认，无需外部依赖）
+    2. 密集嵌入向量（通过 embedding_model 参数注入，如 BGE）
+    3. 预计算嵌入（SearchDocument.embedding 字段）
+
+    生产级语义检索应注入密集嵌入模型（如 BGE-large-zh）。
     """
 
-    def __init__(self, config: Optional[RetrievalConfig] = None):
+    def __init__(
+        self,
+        config: Optional[RetrievalConfig] = None,
+        embedding_model: Optional[EmbeddingModel] = None,
+    ):
         self.config = config or RetrievalConfig()
+        self.embedding_model = embedding_model  # 可插拔嵌入模型
+        self.use_dense_embedding = embedding_model is not None
         self.documents: Dict[str, SearchDocument] = {}
-        self.doc_vectors: Dict[str, Dict[str, float]] = {}  # 稀疏向量
+        self.doc_vectors: Dict[str, Dict[str, float]] = {}  # 稀疏向量（TF-IDF模式）
+        self.doc_dense_vectors: Dict[str, List[float]] = {}  # 密集向量（嵌入模型模式）
         self.vocabulary: Dict[str, int] = {}  # 词表
         self.idf: Dict[str, float] = {}  # IDF 值
         self.total_docs: int = 0
 
     def add_document(self, doc: SearchDocument) -> None:
-        """添加文档到索引"""
+        """添加文档到索引（支持预计算嵌入和可插拔嵌入模型）"""
         if doc.doc_id in self.documents:
-            # 简化：不支持更新，先跳过
             return
 
+        self.documents[doc.doc_id] = doc
+        self.total_docs += 1
+
+        # 模式 1：使用预计算嵌入（SearchDocument.embedding）
+        if doc.embedding is not None:
+            self.doc_dense_vectors[doc.doc_id] = doc.embedding
+            self.use_dense_embedding = True
+            return
+
+        # 模式 2：使用可插拔嵌入模型
+        if self.embedding_model is not None:
+            self.doc_dense_vectors[doc.doc_id] = self.embedding_model.embed(doc.content)
+            return
+
+        # 模式 3：默认稀疏 TF-IDF 向量
         tokens = tokenize(doc.content, self.config)
         if not tokens:
             return
 
-        # 构建词频向量
         tf: Dict[str, float] = defaultdict(float)
         for token in tokens:
             tf[token] += 1.0
 
-        # 更新词表
         for token in tf:
             if token not in self.vocabulary:
                 self.vocabulary[token] = len(self.vocabulary)
 
-        self.documents[doc.doc_id] = doc
         self.doc_vectors[doc.doc_id] = dict(tf)
-        self.total_docs += 1
-
-        # 重新计算 IDF（简化版：每次添加都重算）
         self._compute_idf()
 
     def _compute_idf(self) -> None:
@@ -306,7 +615,7 @@ class VectorRetriever:
 
     def search(self, query: str, top_k: Optional[int] = None) -> List[SearchResult]:
         """
-        向量检索
+        向量检索（支持稀疏 TF-IDF 和密集嵌入两种模式）
 
         Returns:
             按余弦相似度排序的结果列表
@@ -314,17 +623,36 @@ class VectorRetriever:
         if self.total_docs == 0:
             return []
 
-        query_vector = self._vectorize(query)
-        if not query_vector:
-            return []
-
         k = top_k or self.config.top_k
         scores: Dict[str, float] = {}
 
-        for doc_id, doc_vector in self.doc_vectors.items():
-            similarity = self._cosine_similarity(query_vector, doc_vector)
-            if similarity > 0:
-                scores[doc_id] = similarity
+        # 密集向量模式（嵌入模型或预计算嵌入）
+        if self.use_dense_embedding and self.doc_dense_vectors:
+            if self.embedding_model is not None:
+                query_vector = self.embedding_model.embed(query)
+            else:
+                # 预计算嵌入模式下，查询也需要嵌入（简化：使用第一个文档的维度）
+                # 实际使用时应注入 embedding_model
+                query_vector = None
+
+            if query_vector:
+                for doc_id, doc_vector in self.doc_dense_vectors.items():
+                    if self.embedding_model:
+                        similarity = self.embedding_model.similarity(query_vector, doc_vector)
+                    else:
+                        similarity = EmbeddingModel.similarity(EmbeddingModel(), query_vector, doc_vector)
+                    if similarity > 0:
+                        scores[doc_id] = similarity
+        else:
+            # 稀疏 TF-IDF 模式（默认）
+            query_vector = self._vectorize(query)
+            if not query_vector:
+                return []
+
+            for doc_id, doc_vector in self.doc_vectors.items():
+                similarity = self._cosine_similarity(query_vector, doc_vector)
+                if similarity > 0:
+                    scores[doc_id] = similarity
 
         # 排序并返回
         sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)[:k]
@@ -336,7 +664,10 @@ class VectorRetriever:
                 rank=rank,
                 source="vector",
                 document=self.documents.get(doc_id),
-                details={"cosine_similarity": score},
+                details={
+                    "cosine_similarity": score,
+                    "embedding_mode": "dense" if self.use_dense_embedding else "sparse_tfidf",
+                },
             ))
         return results
 
