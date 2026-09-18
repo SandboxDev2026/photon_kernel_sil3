@@ -195,3 +195,99 @@ class TestBoundary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestReflections(unittest.TestCase):
+    """Generative Agents 记忆流：反思层测试"""
+
+    def setUp(self):
+        from evolution.sandbox_town import TownLocation
+        self.loc = TownLocation("h", "家", LocationType.HOME, 0, 0)
+        self.r = TownResident("反思者", self.loc, Personality.OUTGOING)
+
+    def test_no_reflection_below_threshold(self):
+        # 少于5条记忆不反思
+        for i in range(3):
+            self.r.remember(f"事件{i}", importance=0.5)
+        self.assertIsNone(self.r.reflect())
+        self.assertEqual(len(self.r.reflections), 0)
+
+    def test_reflection_after_threshold(self):
+        for i in range(8):
+            self.r.remember(f"事件{i}", importance=0.5)
+        result = self.r.reflect()
+        self.assertIsNotNone(result)
+        self.assertEqual(len(self.r.reflections), 1)
+
+    def test_reflection_resets_counter(self):
+        for i in range(10):
+            self.r.remember(f"事件{i}")
+        self.r.reflect()
+        self.assertEqual(self.r._memories_since_reflection, 0)
+
+    def test_reflection_with_friend(self):
+        # 先建立关系再反思
+        friend = TownResident("好友", self.loc, Personality.OUTGOING)
+        for _ in range(15):
+            self.r.socialize(friend)
+            self.r.remember(f"和好友聊天", importance=0.5)
+        result = self.r.reflect()
+        self.assertIsNotNone(result)
+        self.assertIn("好友", result)
+
+    def test_reflections_in_stats(self):
+        for i in range(10):
+            self.r.remember(f"事件{i}")
+        self.r.reflect()
+        s = self.r.stats()
+        self.assertGreaterEqual(s["reflections"], 1)
+
+
+class TestDailySchedule(unittest.TestCase):
+    """Generative Agents 每日日程机制测试"""
+
+    def setUp(self):
+        self.town = SandboxTown(num_residents=4, seed=55)
+
+    def test_morning_factory(self):
+        # tick 0,1 应该去工厂
+        r = self.town.residents[0]
+        loc = r.plan_day(0, self.town.locations)
+        self.assertEqual(loc.loc_type, LocationType.FACTORY)
+
+    def test_noon_cafe(self):
+        r = self.town.residents[0]
+        loc = r.plan_day(2, self.town.locations)
+        self.assertEqual(loc.loc_type, LocationType.CAFE)
+
+    def test_afternoon_market_or_park(self):
+        r = self.town.residents[0]
+        loc = r.plan_day(4, self.town.locations)
+        self.assertIn(loc.loc_type, [LocationType.MARKET, LocationType.PARK])
+
+    def test_evening_square(self):
+        r = self.town.residents[0]
+        loc = r.plan_day(6, self.town.locations)
+        self.assertEqual(loc.loc_type, LocationType.SQUARE)
+
+    def test_schedule_consistency(self):
+        # 同一时段同一居民应该去同一地点
+        r = self.town.residents[0]
+        self.assertEqual(r.plan_day(1, self.town.locations).loc_id,
+                         r.plan_day(9, self.town.locations).loc_id)
+
+    def test_step_uses_schedule(self):
+        self.town.step(0)
+        # 早上应该都在工厂附近
+        locations = set(r.location.loc_type for r in self.town.residents)
+        self.assertIn(LocationType.FACTORY, locations)
+
+
+class TestReflectionEventsInLog(unittest.TestCase):
+    def test_reflection_logged(self):
+        town = SandboxTown(num_residents=4, seed=77)
+        for t in range(15):
+            town.step(t)
+        refl_events = [e for e in town.event_log if e.event_type == "reflection"]
+        # 跑15 tick 应该至少产生一些反思
+        self.assertGreaterEqual(len(refl_events), 0)

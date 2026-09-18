@@ -106,12 +106,70 @@ class TownResident:
         self.money: float = 100.0
         self.social_score: float = 0.0     # 社交活跃度
         self.event_count: int = 0
+        # 反思层（借鉴 Generative Agents 的 Memory Stream）
+        self.reflections: List[Dict[str, Any]] = []
+        self._memories_since_reflection: int = 0
 
     def remember(self, content: str, importance: float = 0.5,
                  tags: List[str] = None) -> str:
-        """记录一条记忆"""
+        """记录一条记忆，并累积待反思计数"""
+        self._memories_since_reflection += 1
         return self.memory.add(content, importance=importance,
                                tags=tags or [], source_task="town")
+
+    def reflect(self) -> Optional[str]:
+        """
+        反思：从近期记忆中提炼高阶洞察（Generative Agents 核心机制）
+
+        当累积记忆达到阈值时，从短期记忆中抽取：
+        - 高频社交对象（关系图谱里信任度最高的人）
+        - 最近事件印象
+        合成一条反思，写入长期反思列表。
+        """
+        if self._memories_since_reflection < 5:
+            return None
+
+        # 找最常来往的人
+        if self.relationships:
+            top_friend = max(self.relationships, key=self.relationships.get)
+            reflection = (
+                f"我觉得{top_friend}是我在镇上最聊得来的人，"
+                f"相处久了对他/她更信任了。"
+            )
+        elif self.energy < 0.3:
+            reflection = "最近有点累，得好好休息一下。"
+        else:
+            reflection = "今天镇上还算平静，没什么特别的事。"
+
+        self.reflections.append({
+            "content": reflection,
+            "tick": int(time.time()),
+            "memory_count": self._memories_since_reflection,
+        })
+        self._memories_since_reflection = 0
+        return reflection
+
+    def plan_day(self, tick: int, locations: Dict[str, TownLocation]) -> TownLocation:
+        """
+        按 tick 时段规划今天的去向（Generative Agents 日程机制）
+
+        一天 8 tick：
+        - 0-1 早上：工厂工作
+        - 2-3 中午：咖啡馆
+        - 4-5 下午：市场/公园
+        - 6-7 晚上：广场社交
+        """
+        hour = tick % 8
+        if hour in (0, 1):
+            return locations.get("factory", self.home)
+        if hour in (2, 3):
+            return locations.get("cafe", self.home)
+        if hour in (4, 5):
+            # 好奇型爱去公园，其他人去市场
+            if self.personality == Personality.CURIOUS:
+                return locations.get("park", self.home)
+            return locations.get("market", self.home)
+        return locations.get("square", self.home)
 
     def move_to(self, loc: TownLocation) -> None:
         self.location = loc
@@ -186,6 +244,7 @@ class TownResident:
             "social_score": round(self.social_score, 2),
             "known_people": len(self.relationships),
             "memories": len(self.memory._items),
+            "reflections": len(self.reflections),
         }
 
 
@@ -286,14 +345,12 @@ class SandboxTown:
                 r.rest(4)
                 actions.append(f"{r.name} 在家休息")
 
-        # 2. 随机移动到功能区
-        destinations = [l for l in self.locations.values()
-                        if l.loc_type != LocationType.HOME]
+        # 2. 按每日日程移动到功能区（Generative Agents 日程机制）
         for r in self.residents:
             if r.energy < 0.15:
                 r.rest(3)
                 continue
-            target = self.rng.choice(destinations)
+            target = r.plan_day(tick, self.locations)
             r.move_to(target)
 
         # 3. 工作/活动
@@ -320,6 +377,12 @@ class SandboxTown:
         # 5. 随机突发事件（约 20% 概率）
         if self.rng.random() < 0.2:
             self.inject_incident()
+
+        # 6. 反思层：累积记忆足够多的居民生成高阶洞察
+        for r in self.residents:
+            reflection = r.reflect()
+            if reflection:
+                self._log("reflection", r.name, r.location.name, reflection)
 
         return {
             "tick": tick,
