@@ -267,10 +267,13 @@ class SandboxTown:
     ]
 
     def __init__(self, grid_size: int = 8, num_residents: int = 10,
-                 seed: int = 42):
+                 seed: int = 42, active_ratio: float = 0.7,
+                 planner: Any = None):
         self.rng = random.Random(seed)  # nosec B311 - 小镇模拟，非加密用途
         random.seed(seed)  # nosec B311 - 小镇模拟，非加密用途
         self.grid_size = grid_size
+        self.active_ratio = active_ratio  # 微内核：每tick活跃居民比例
+        self.planner = planner  # 可插拔规划器（None=用resident.plan_day）
         self.tick_count = 0
         self.residents: List[TownResident] = []
         self.locations: Dict[str, TownLocation] = {}
@@ -334,34 +337,59 @@ class SandboxTown:
 
     # ---------- 每 tick ----------
 
+    def _select_active_residents(self, tick: int) -> List[TownResident]:
+        """
+        微内核调度：每tick只激活一部分居民（借鉴 Agent-Kernel 分层调度）
+
+        活跃居民：执行完整行为（移动+工作+社交+反思）
+        休眠居民：只休息，不参与社交，不消耗"LLM调用"成本
+        活跃名单每 8 tick 轮换一次
+        """
+        n_active = max(1, int(len(self.residents) * self.active_ratio))
+        rotation_offset = (tick // 8) % max(1, len(self.residents))
+        ordered = self.residents[rotation_offset:] + self.residents[:rotation_offset]
+        return ordered[:n_active]
+
     def step(self, tick: int) -> Dict[str, Any]:
-        """推进一步小镇时间"""
+        """推进一步小镇时间（微内核调度：活跃/休眠分层）"""
         self.tick_count = tick
         actions: List[str] = []
 
-        # 1. 唤醒/休息
+        # 1. 微内核调度：选活跃居民
+        active = self._select_active_residents(tick)
+        active_names = {r.name for r in active}
+
+        # 2. 休眠居民只休息
         for r in self.residents:
+            if r.name not in active_names:
+                r.rest(1)
+                continue
+            # 活跃居民的作息
             if tick % 8 == 0:
                 r.rest(4)
                 actions.append(f"{r.name} 在家休息")
 
-        # 2. 按每日日程移动到功能区（Generative Agents 日程机制）
-        for r in self.residents:
+        # 3. 活跃居民按日程移动
+        for r in active:
             if r.energy < 0.15:
                 r.rest(3)
                 continue
-            target = r.plan_day(tick, self.locations)
+            # 可插拔规划器：有 planner 用 planner.plan()，否则用 resident.plan_day()
+            if self.planner is not None:
+                target = self.planner.plan(r, tick, self.locations)
+            else:
+                target = r.plan_day(tick, self.locations)
             r.move_to(target)
 
-        # 3. 工作/活动
-        for r in self.residents:
+        # 4. 活跃居民工作
+        for r in active:
             if r.location.loc_type == LocationType.FACTORY:
                 earned = r.work(2)
                 actions.append(f"{r.name} 在{self.locations['factory'].name} 赚了 ${earned:.1f}")
 
-        # 4. 社交：同一地点的居民相遇
+        # 5. 社交：同一地点的活跃居民相遇
         by_loc: Dict[str, List[TownResident]] = {}
-        for r in self.residents:
+        for r in active:
             by_loc.setdefault(r.location.loc_id, []).append(r)
         for loc_id, group in by_loc.items():
             if len(group) < 2:
@@ -374,12 +402,12 @@ class SandboxTown:
                                   group[i].location.name, line,
                                   target=group[j].name)
 
-        # 5. 随机突发事件（约 20% 概率）
+        # 6. 随机突发事件（约 20% 概率）
         if self.rng.random() < 0.2:
             self.inject_incident()
 
-        # 6. 反思层：累积记忆足够多的居民生成高阶洞察
-        for r in self.residents:
+        # 7. 反思层：活跃居民中累积记忆足够多的生成洞察
+        for r in active:
             reflection = r.reflect()
             if reflection:
                 self._log("reflection", r.name, r.location.name, reflection)
